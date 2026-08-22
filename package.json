@@ -1,0 +1,38 @@
+{
+  "name": "dsh-skill-manage",
+  "description": "DeepSeek Harness 技能管理设置页插件",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "prepare": "node build.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/react": "~18.3.1",
+    "esbuild": "^0.25.0",
+    "react": "^18.2.0",
+    "typescript": "^5.6.0"
+  }
+}
