@@ -67,7 +67,9 @@ const styles: Record<string, CSSProperties> = {
   select: { flex: 1, padding: '6px 8px', borderRadius: 6, border: '1px solid #4445', background: 'transparent', color: 'inherit', fontSize: 13 },
   smallInput: { flex: 2, minWidth: 180, padding: '6px 10px', borderRadius: 6, border: '1px solid #4445', background: 'transparent', color: 'inherit', fontSize: 13 },
   scopePath: { color: '#777', fontSize: 11.5, margin: '0 0 14px', fontFamily: 'monospace' },
-  installRow: { display: 'flex', flexWrap: 'wrap', rowGap: 8, gap: 8, alignItems: 'center', padding: 12, border: '1px solid #3333', borderRadius: 8, marginBottom: 16 },
+  installCard: { display: 'flex', flexDirection: 'column', gap: 10, padding: 12, border: '1px solid #3333', borderRadius: 8, marginBottom: 16 },
+  installRow: { display: 'flex', gap: 8, alignItems: 'center' },
+  installActions: { display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'flex-end' },
   input: { flex: 1, minWidth: 240, padding: '6px 10px', borderRadius: 6, border: '1px solid #4445', background: 'transparent', color: 'inherit', fontSize: 13 },
   button: { padding: '6px 14px', borderRadius: 6, border: '1px solid #5556', background: '#3335', color: 'inherit', cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap' },
   primary: { background: '#2b62d9', borderColor: '#2b62d9', color: '#fff' },
@@ -332,46 +334,50 @@ export function SkillManageSection(): React.ReactElement {
       </div>
       {scopeLabel !== '' && <p style={styles.scopePath}>{scopeLabel}</p>}
 
-      <div style={styles.installRow}>
-        <span style={styles.label}>本地路径</span>
-        <input
-          style={styles.input}
-          placeholder="/path/to/skill-folder（需含 SKILL.md）"
-          value={source}
-          onChange={e => setSource(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !busy) install() }}
-        />
-        <label style={{ ...styles.label, display: 'flex', alignItems: 'center', gap: 4 }}>
-          <input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />
-          覆盖同名
-        </label>
-        {supportsDirPick && (
-          <>
-            <input
-              type="file"
-              multiple
-              hidden
-              ref={el => {
-                pickRef.current = el
-                if (el !== null) {
-                  el.setAttribute('webkitdirectory', '')
-                  el.setAttribute('directory', '')
-                }
-              }}
-              onChange={e => {
-                const list = e.target.files
-                if (list !== null && list.length > 0) void installPicked(list)
-                e.target.value = ''
-              }}
-            />
-            <button type="button" style={styles.button} disabled={busy} onClick={() => pickRef.current?.click()}>
-              浏览…
-            </button>
-          </>
-        )}
-        <button type="button" style={{ ...styles.button, ...styles.primary }} disabled={busy} onClick={install}>
-          安装到{scopeKind === 'project' ? '项目' : '用户'}
-        </button>
+      <div style={styles.installCard}>
+        <div style={styles.installRow}>
+          <span style={styles.label}>本地路径</span>
+          <input
+            style={styles.input}
+            placeholder="/path/to/skill-folder（需含 SKILL.md）"
+            value={source}
+            onChange={e => setSource(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !busy) install() }}
+          />
+        </div>
+        <div style={styles.installActions}>
+          <label style={{ ...styles.label, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />
+            覆盖同名
+          </label>
+          {supportsDirPick && (
+            <>
+              <input
+                type="file"
+                multiple
+                hidden
+                ref={el => {
+                  pickRef.current = el
+                  if (el !== null) {
+                    el.setAttribute('webkitdirectory', '')
+                    el.setAttribute('directory', '')
+                  }
+                }}
+                onChange={e => {
+                  const list = e.target.files
+                  if (list !== null && list.length > 0) void installPicked(list)
+                  e.target.value = ''
+                }}
+              />
+              <button type="button" style={styles.button} disabled={busy} onClick={() => pickRef.current?.click()}>
+                浏览…
+              </button>
+            </>
+          )}
+          <button type="button" style={{ ...styles.button, ...styles.primary }} disabled={busy} onClick={install}>
+            安装到{scopeKind === 'project' ? '项目' : '用户'}
+          </button>
+        </div>
       </div>
       <p style={styles.scopePath}>
         安装目标：{scopeKind === 'user'
