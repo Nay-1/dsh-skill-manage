@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { CSSProperties, ReactElement, ReactNode } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 
 export interface SkillEntry {
   name: string
@@ -43,19 +43,8 @@ async function api<T>(route: string, body?: Record<string, unknown>): Promise<T 
   return (await res.json()) as T & Envelope
 }
 
-const LS_KEY = 'dsh-skill-manage.customRoots'
-
 /** Folder picking needs the non-standard webkitdirectory attribute (Chromium/Firefox). */
 const supportsDirPick = typeof document !== 'undefined' && 'webkitdirectory' in document.createElement('input')
-
-function loadCustomRoots(): string[] {
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(LS_KEY) ?? '[]')
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
-  } catch {
-    return []
-  }
-}
 
 const styles: Record<string, CSSProperties> = {
   wrap: { padding: '20px 24px', maxWidth: 860, fontFamily: 'inherit', fontSize: 14 },
@@ -64,8 +53,15 @@ const styles: Record<string, CSSProperties> = {
   hint: { color: '#888', fontSize: 12.5, margin: '0 0 16px' },
   scopeRow: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 },
   scopeLabel: { fontSize: 12.5, color: '#999', whiteSpace: 'nowrap' },
-  select: { flex: 1, padding: '6px 8px', borderRadius: 6, border: '1px solid #4445', background: 'transparent', color: 'inherit', fontSize: 13 },
-  smallInput: { flex: 2, minWidth: 180, padding: '6px 10px', borderRadius: 6, border: '1px solid #4445', background: 'transparent', color: 'inherit', fontSize: 13 },
+  comboWrap: { flex: 1, position: 'relative', minWidth: 0 },
+  comboInput: { width: '100%', boxSizing: 'border-box', padding: '6px 28px 6px 10px', borderRadius: 6, border: '1px solid #4445', background: 'transparent', color: 'inherit', fontSize: 13 },
+  comboCaret: { position: 'absolute', right: 9, top: '50%', transform: 'translateY(-50%)', color: '#888', fontSize: 11, pointerEvents: 'none' },
+  comboList: { position: 'absolute', zIndex: 20, left: 0, right: 0, top: 'calc(100% + 4px)', maxHeight: 260, overflowY: 'auto', background: '#1e1f22', border: '1px solid #4446', borderRadius: 8, boxShadow: '0 8px 24px #0007', padding: 4 },
+  comboItem: { padding: '7px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 13 },
+  comboItemActive: { background: '#2b62d94d' },
+  comboTitle: { fontWeight: 600 },
+  comboPath: { color: '#888', fontSize: 11.5, fontFamily: 'monospace', marginTop: 1, overflowWrap: 'anywhere' },
+  comboEmpty: { padding: '10px', textAlign: 'center', color: '#888', fontSize: 12.5 },
   scopePath: { color: '#777', fontSize: 11.5, margin: '0 0 14px', fontFamily: 'monospace' },
   installCard: { display: 'flex', flexDirection: 'column', gap: 10, padding: 12, border: '1px solid #3333', borderRadius: 8, marginBottom: 16 },
   installRow: { display: 'flex', gap: 8, alignItems: 'center' },
@@ -80,7 +76,6 @@ const styles: Record<string, CSSProperties> = {
   rowMain: { flex: 1, minWidth: 0 },
   skillName: { fontWeight: 600, fontFamily: 'monospace', fontSize: 13.5 },
   skillDesc: { color: '#aaa', fontSize: 12.5, marginTop: 2, overflowWrap: 'anywhere' },
-  badge: { fontSize: 11, borderRadius: 4, padding: '1px 6px', marginLeft: 8, verticalAlign: '1px' },
   actions: { display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0, paddingTop: 2 },
   toggleOn: { opacity: 1 },
   toggleOff: { opacity: 0.45, textDecoration: 'line-through' },
@@ -92,27 +87,6 @@ const styles: Record<string, CSSProperties> = {
   groupTitleCount: { fontWeight: 400, color: '#777', marginLeft: 6 },
   groupEmpty: { color: '#888', fontSize: 12.5, textAlign: 'center', padding: '14px 0', border: '1px dashed #3333', borderRadius: 8 },
   dupHint: { margin: '0 0 10px', fontSize: 11.5, color: '#b08a3e' },
-}
-
-function Flag({ on, children }: { on: boolean, children: ReactNode }): ReactElement {
-  return (
-    <span style={{ ...styles.badge, background: on ? '#2b62d92b' : '#88888822', color: on ? '#7ea6f0' : '#999' }}>
-      {children}
-    </span>
-  )
-}
-
-function ToggleButton({ on, label, disabled, onClick }: {
-  on: boolean
-  label: string
-  disabled: boolean
-  onClick(): void
-}): ReactElement {
-  return (
-    <button type="button" style={{ ...styles.button, ...(on ? styles.toggleOn : styles.toggleOff) }} disabled={disabled} onClick={onClick}>
-      {label}
-    </button>
-  )
 }
 
 function RemoveButton({ disabled, onConfirm }: { disabled: boolean, onConfirm(): void }): ReactElement {
@@ -136,6 +110,112 @@ function RemoveButton({ disabled, onConfirm }: { disabled: boolean, onConfirm():
   )
 }
 
+/** Searchable scope selector: user level plus the registered workspaces. */
+function ScopePicker({ workspaces, value, onChange }: {
+  workspaces: Workspace[]
+  value: string
+  onChange(root: string): void
+}): ReactElement {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [highlight, setHighlight] = useState(0)
+  const boxRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    // mousedown-outside (not blur) so clicking an item never races the close.
+    const onDocMouseDown = (e: MouseEvent): void => {
+      if (boxRef.current !== null && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [open])
+
+  const selected = workspaces.find(w => w.path === value)
+  const label = value === ''
+    ? '用户级（~/.dsh/skills）'
+    : ((selected !== undefined && selected.title !== '') ? selected.title : value)
+
+  const q = query.trim().toLowerCase()
+  const matches = workspaces.filter(w =>
+    q === '' || w.title.toLowerCase().includes(q) || w.path.toLowerCase().includes(q),
+  )
+
+  const openList = (): void => { setOpen(true); setQuery(''); setHighlight(0) }
+  const pick = (path: string): void => {
+    onChange(path)
+    setOpen(false)
+  }
+
+  return (
+    <div ref={boxRef} style={styles.comboWrap}>
+      <input
+        style={styles.comboInput}
+        role="combobox"
+        aria-expanded={open}
+        placeholder="搜索项目…"
+        value={open ? query : label}
+        onChange={e => {
+          setQuery(e.target.value)
+          setHighlight(0)
+          // Focus may persist across a selection (mousedown is prevented on items),
+          // so editing while closed must enter search mode too.
+          setOpen(true)
+        }}
+        onFocus={openList}
+        onClick={() => { if (!open) openList() }}
+        onKeyDown={e => {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault()
+            setOpen(true)
+            setHighlight(h => Math.min(h + 1, matches.length))
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault()
+            setHighlight(h => Math.max(h - 1, 0))
+          } else if (e.key === 'Enter' && open) {
+            e.preventDefault()
+            pick(highlight === 0 ? '' : matches[highlight - 1].path)
+          } else if (e.key === 'Escape') {
+            setOpen(false)
+          }
+        }}
+      />
+      <span style={styles.comboCaret}>▼</span>
+      {open && (
+        <div style={styles.comboList} role="listbox">
+          <div
+            key="opt:user"
+            role="option"
+            aria-selected={value === ''}
+            style={{ ...styles.comboItem, ...(highlight === 0 ? styles.comboItemActive : {}) }}
+            onMouseEnter={() => setHighlight(0)}
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => pick('')}
+          >
+            <div style={styles.comboTitle}>用户级</div>
+            <div style={styles.comboPath}>~/.dsh/skills</div>
+          </div>
+          {matches.map((w, i) => (
+            <div
+              key={`opt:${w.path}`}
+              role="option"
+              aria-selected={w.path === value}
+              style={{ ...styles.comboItem, ...(highlight === i + 1 ? styles.comboItemActive : {}) }}
+              onMouseEnter={() => setHighlight(i + 1)}
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => pick(w.path)}
+            >
+              <div style={styles.comboTitle}>{w.title !== '' ? w.title : w.path}</div>
+              <div style={styles.comboPath}>{w.path}</div>
+            </div>
+          ))}
+          {matches.length === 0 && <div style={styles.comboEmpty}>无匹配项目</div>}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** The「技能管理」settings page: user- and project-level skill management. */
 export function SkillManageSection(): React.ReactElement {
   /** '' = user level; otherwise a project root path. */
@@ -143,8 +223,6 @@ export function SkillManageSection(): React.ReactElement {
   /** Install target derived from the selection — the API's `scope` field says 'mixed' for project views. */
   const scopeKind: 'user' | 'project' = root === '' ? 'user' : 'project'
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
-  const [customRoots, setCustomRoots] = useState<string[]>(loadCustomRoots)
-  const [manualPath, setManualPath] = useState('')
   const [scopeLabel, setScopeLabel] = useState('')
   const [dirs, setDirs] = useState<{ project?: string, user?: string }>({})
   const [skills, setSkills] = useState<SkillEntry[]>([])
@@ -156,22 +234,12 @@ export function SkillManageSection(): React.ReactElement {
   const pickRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
+    // Drop the retired custom-roots key so stale manual paths never resurface.
+    try { localStorage.removeItem('dsh-skill-manage.customRoots') } catch {}
     void api<{ workspaces: Workspace[] }>('/workspaces')
       .then(result => { if (result.ok) setWorkspaces(result.workspaces) })
       .catch(() => {})
   }, [])
-
-  const addManualRoot = (): void => {
-    const trimmed = manualPath.trim()
-    if (trimmed === '') return
-    if (!customRoots.includes(trimmed)) {
-      const next = [...customRoots, trimmed]
-      setCustomRoots(next)
-      try { localStorage.setItem(LS_KEY, JSON.stringify(next)) } catch {}
-    }
-    setRoot(trimmed)
-    setManualPath('')
-  }
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
@@ -256,9 +324,9 @@ export function SkillManageSection(): React.ReactElement {
     })
   }
 
-  const toggle = (skill: SkillEntry, field: 'model' | 'user', enabled: boolean): void => {
+  const toggle = (skill: SkillEntry, enabled: boolean): void => {
     void act(async () => {
-      const result = await api('/toggle', { name: skill.name, field, enabled, ...rowBody(skill) })
+      const result = await api('/toggle', { name: skill.name, model: enabled, user: enabled, ...rowBody(skill) })
       if (!result.ok) throw new Error(result.error ?? '切换失败')
       return ''
     })
@@ -270,33 +338,28 @@ export function SkillManageSection(): React.ReactElement {
     .filter(p => userSkills.some(u => u.name === p.name))
     .map(p => p.name)
 
-  const renderRow = (skill: SkillEntry): ReactElement => (
-    <div key={`${skill.dirName}@${skill.scope}`} style={styles.row}>
-      <div style={styles.rowMain}>
-        <div>
+  const renderRow = (skill: SkillEntry): ReactElement => {
+    const enabled = skill.modelInvocable || skill.userInvocable
+    return (
+      <div key={`${skill.dirName}@${skill.scope}`} style={styles.row}>
+        <div style={styles.rowMain}>
           <span style={styles.skillName}>{skill.name}</span>
-          <Flag on={skill.modelInvocable}>模型{skill.modelInvocable ? '可调用' : '已禁用'}</Flag>
-          <Flag on={skill.userInvocable}>用户{skill.userInvocable ? '可调用' : '已禁用'}</Flag>
+          <div style={styles.skillDesc}>{skill.description || '(无描述)'}</div>
         </div>
-        <div style={styles.skillDesc}>{skill.description || '(无描述)'}</div>
+        <div style={styles.actions}>
+          <button
+            type="button"
+            style={{ ...styles.button, ...(enabled ? styles.toggleOn : styles.toggleOff) }}
+            disabled={busy}
+            onClick={() => toggle(skill, !enabled)}
+          >
+            {enabled ? '已启用' : '已停用'}
+          </button>
+          <RemoveButton disabled={busy} onConfirm={() => remove(skill)} />
+        </div>
       </div>
-      <div style={styles.actions}>
-        <ToggleButton
-          on={skill.modelInvocable}
-          label="模型"
-          disabled={busy}
-          onClick={() => toggle(skill, 'model', !skill.modelInvocable)}
-        />
-        <ToggleButton
-          on={skill.userInvocable}
-          label="用户"
-          disabled={busy}
-          onClick={() => toggle(skill, 'user', !skill.userInvocable)}
-        />
-        <RemoveButton disabled={busy} onConfirm={() => remove(skill)} />
-      </div>
-    </div>
-  )
+    )
+  }
 
   return (
     <div style={styles.wrap}>
@@ -308,29 +371,7 @@ export function SkillManageSection(): React.ReactElement {
 
       <div style={styles.scopeRow}>
         <span style={styles.scopeLabel}>管理范围</span>
-        <select
-          style={styles.select}
-          value={root}
-          onChange={e => setRoot(e.target.value)}
-        >
-          <option value="">用户级（~/.dsh/skills）</option>
-          {workspaces.map(w => (
-            <option key={`ws:${w.path}`} value={w.path}>
-              项目：{w.title !== '' ? w.title : w.path}
-            </option>
-          ))}
-          {customRoots.filter(p => !workspaces.some(w => w.path === p)).map(p => (
-            <option key={`c:${p}`} value={p}>自定义：{p}</option>
-          ))}
-        </select>
-        <input
-          style={styles.smallInput}
-          placeholder="或输入项目根路径…"
-          value={manualPath}
-          onChange={e => setManualPath(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') addManualRoot() }}
-        />
-        <button type="button" style={styles.button} disabled={busy} onClick={addManualRoot}>添加</button>
+        <ScopePicker workspaces={workspaces} value={root} onChange={setRoot} />
       </div>
       {scopeLabel !== '' && <p style={styles.scopePath}>{scopeLabel}</p>}
 

@@ -14,8 +14,7 @@
 | 范围 | 目录 |
 |---|---|
 | 用户级（默认） | `~/.dsh/skills`（即 `$DSH_HOME/skills`） |
-| 已登记工作区 | 自动读取 `ctx.workspaceRegistry`，即 Web UI 工作区切换器里的项目 |
-| 自定义路径 | 手动输入任意项目根路径（localStorage 记住历史） |
+| 已登记工作区 | 自动读取 `ctx.workspaceRegistry`，即 Web UI 工作区切换器里的项目，支持按名称/路径搜索 |
 
 项目根按官方 provider 语义解析为最近的 `.git` 祖先目录；扫描 `<根>/.dsh/skills` 与 `<根>/.agents/skills`，同名时 `.dsh` 优先，安装固定落入 `.dsh/skills`。
 
@@ -46,9 +45,8 @@ dsh plugin --profile web add /path/to/dsh-skill-manage
 
 ## 使用说明
 
-- **模型可调用**：AI 能否在对话中自主通过 `skill` 工具加载该技能（frontmatter `disable-model-invocation`）
-- **用户可调用**：你能否通过 `/技能名` 斜杠手势触发（frontmatter `user-invocable`）
-- 两项默认开启；改动即时生效，新会话可见
+- **启停**：「已启用 / 已停用」一键同时控制模型调用（frontmatter `disable-model-invocation`）与用户斜杠触发（`user-invocable`）；任一开启即显示已启用
+- 默认启用；改动即时生效，新会话可见
 - 运行时同名技能项目级优先于用户级（官方 rank 语义）
 
 ## 架构

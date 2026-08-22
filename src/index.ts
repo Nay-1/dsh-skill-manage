@@ -324,24 +324,27 @@ async function handleRemove(scope: Scope, body: Record<string, unknown>): Promis
 
 async function handleToggle(scope: Scope, body: Record<string, unknown>): Promise<{ toggled: string }> {
   const dir = locateSkillDir(scope, body.name)
-  const field = body.field === 'model' || body.field === 'user' ? body.field : null
-  if (field === null) throw new ApiError(400, 'field 必须是 "model" 或 "user"')
-  if (typeof body.enabled !== 'boolean') throw new ApiError(400, 'enabled 必须是布尔值')
+  const model = typeof body.model === 'boolean' ? body.model : null
+  const user = typeof body.user === 'boolean' ? body.user : null
+  if (model === null && user === null) throw new ApiError(400, '需要 model 或 user 之一（布尔值）')
 
   const file = path.join(dir, 'SKILL.md')
   const content = await readFile(file, 'utf8')
   // disable-model-invocation stores the inverse of model invocability;
   // user-invocable stores it directly.
-  const key = field === 'model' ? 'disable-model-invocation' : 'user-invocable'
-  const value = field === 'model' ? String(!body.enabled) : String(body.enabled)
+  const updates: Array<[string, string]> = []
+  if (model !== null) updates.push(['disable-model-invocation', String(!model)])
+  if (user !== null) updates.push(['user-invocable', String(user)])
 
   const split = splitFrontmatter(content)
   if (split === null) {
-    // No frontmatter block: prepend a minimal one carrying just this key.
-    const header = `---\nname: ${String(body.name)}\n${key}: ${value}\ndescription: \n---\n`
-    await writeFile(file, `${header}${content}`)
+    // No frontmatter block: prepend a minimal one carrying just these keys.
+    const lines = [`name: ${String(body.name)}`, ...updates.map(([k, v]) => `${k}: ${v}`), 'description: ']
+    await writeFile(file, `${joinFrontmatter(lines, '')}${content}`)
   } else {
-    await writeFile(file, joinFrontmatter(setFrontmatterKey(split.lines, key, value), split.body))
+    let lines = split.lines
+    for (const [key, value] of updates) lines = setFrontmatterKey(lines, key, value)
+    await writeFile(file, joinFrontmatter(lines, split.body))
   }
   return { toggled: String(body.name) }
 }
