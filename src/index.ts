@@ -5,6 +5,7 @@
  *   GET  /skills?root=…          — skills of one scope (user level, or a project)
  *   GET  /workspaces             — registered workspaces usable as project roots
  *   POST /install {source,…}     — copy a local skill folder into the scope's dir
+ *   POST /install-upload {files} — stage browser-picked files, then install them
  *   POST /remove  {name,…}       — delete an installed skill directory
  *   POST /toggle  {name,…}       — rewrite invocability flags in frontmatter
  *
@@ -14,7 +15,7 @@
  * `.dsh/skills` and `.agents/skills` there, installs land in `.dsh/skills`.
  */
 
-import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -22,7 +23,8 @@ import path from 'node:path'
 /** Required services: the route registry and the workspace registry. */
 export const inject = ['webServer', 'workspaceRegistry']
 
-const MAX_BODY_BYTES = 1 << 20
+/** Raised to fit /install-upload payloads (10 MiB content ≈ 14 MiB base64+JSON). */
+const MAX_BODY_BYTES = 16 << 20
 const KEBAB_CASE = /^[a-z0-9]+(-[a-z0-9]+)*$/
 const GIT_WALK_LIMIT = 16
 
@@ -250,6 +252,57 @@ async function handleInstall(scope: Scope, body: Record<string, unknown>): Promi
   }
 }
 
+const MAX_UPLOAD_FILES = 500
+const MAX_UPLOAD_TOTAL_BYTES = 10 << 20
+
+/**
+ * Install from browser-picked files (no absolute paths available client-side):
+ * stage the uploaded tree into a temp dir, then reuse handleInstall for all
+ * validation (SKILL.md, frontmatter, kebab-case, conflict checks) and copying.
+ */
+async function handleInstallUpload(scope: Scope, body: Record<string, unknown>): Promise<SkillEntry> {
+  const files = Array.isArray(body.files) ? body.files : null
+  if (files === null || files.length === 0) throw new ApiError(400, '缺少 files（上传的文件列表）')
+  if (files.length > MAX_UPLOAD_FILES) throw new ApiError(400, `文件数超过上限 ${MAX_UPLOAD_FILES}`)
+
+  const tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'dsh-skill-upload-'))
+  try {
+    let totalBytes = 0
+    for (const entry of files) {
+      const rec = entry as { path?: unknown, data?: unknown }
+      const rel = typeof rec.path === 'string' ? rec.path : ''
+      const data = typeof rec.data === 'string' ? rec.data : ''
+      if (rel === '' || data === '') throw new ApiError(400, 'files 条目需要 { path, data }')
+      const segments = rel.split('/')
+      if (path.isAbsolute(rel) || segments.some(s => s === '' || s === '..')) {
+        throw new ApiError(400, `非法文件路径：${rel}`)
+      }
+      const buffer = Buffer.from(data, 'base64')
+      totalBytes += buffer.length
+      if (totalBytes > MAX_UPLOAD_TOTAL_BYTES) throw new ApiError(400, '上传内容总大小超过 10MB 上限')
+      const dest = path.join(tmpRoot, ...segments)
+      if (!dest.startsWith(tmpRoot + path.sep)) throw new ApiError(400, `目标越界：${rel}`)
+      await mkdir(path.dirname(dest), { recursive: true })
+      await writeFile(dest, buffer)
+    }
+    // The picked folder's own name is segment one; SKILL.md sits inside it.
+    let srcDir = tmpRoot
+    if (!existsSync(path.join(tmpRoot, 'SKILL.md'))) {
+      const entries = await readdir(tmpRoot, { withFileTypes: true })
+      const topDirs = entries.filter(e => e.isDirectory())
+      if (topDirs.length === 1 && existsSync(path.join(tmpRoot, topDirs[0].name, 'SKILL.md'))) {
+        srcDir = path.join(tmpRoot, topDirs[0].name)
+      }
+    }
+    if (!existsSync(path.join(srcDir, 'SKILL.md'))) {
+      throw new ApiError(400, '所选文件夹缺少 SKILL.md，不是有效的技能包')
+    }
+    return await handleInstall(scope, { source: srcDir, force: body.force === true })
+  } finally {
+    await rm(tmpRoot, { recursive: true, force: true })
+  }
+}
+
 /** Locate an installed skill across the scope's dirs (earlier dirs win). */
 function locateSkillDir(scope: Scope, name: unknown): string {
   if (typeof name !== 'string' || !KEBAB_CASE.test(name)) {
@@ -354,6 +407,10 @@ export function apply(ctx: {
           const scope = await scopeOf(body)
           if (route === '/install') {
             json(res, 200, { ok: true, skill: await handleInstall(scope, body) })
+            return
+          }
+          if (route === '/install-upload') {
+            json(res, 200, { ok: true, skill: await handleInstallUpload(scope, body) })
             return
           }
           if (route === '/remove') {

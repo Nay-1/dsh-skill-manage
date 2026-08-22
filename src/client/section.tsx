@@ -25,6 +25,15 @@ function errText(error: unknown): string {
   return String((error as { message?: string } | null)?.message ?? error)
 }
 
+function bytesToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  }
+  return btoa(binary)
+}
+
 async function api<T>(route: string, body?: Record<string, unknown>): Promise<T & Envelope> {
   const res = await fetch(`/dsh-skill-manage${route}`, {
     method: body === undefined ? 'GET' : 'POST',
@@ -35,6 +44,9 @@ async function api<T>(route: string, body?: Record<string, unknown>): Promise<T 
 }
 
 const LS_KEY = 'dsh-skill-manage.customRoots'
+
+/** Folder picking needs the non-standard webkitdirectory attribute (Chromium/Firefox). */
+const supportsDirPick = typeof document !== 'undefined' && 'webkitdirectory' in document.createElement('input')
 
 function loadCustomRoots(): string[] {
   try {
@@ -53,11 +65,11 @@ const styles: Record<string, CSSProperties> = {
   scopeRow: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 },
   scopeLabel: { fontSize: 12.5, color: '#999', whiteSpace: 'nowrap' },
   select: { flex: 1, padding: '6px 8px', borderRadius: 6, border: '1px solid #4445', background: 'transparent', color: 'inherit', fontSize: 13 },
-  smallInput: { flex: 2, padding: '6px 10px', borderRadius: 6, border: '1px solid #4445', background: 'transparent', color: 'inherit', fontSize: 13 },
+  smallInput: { flex: 2, minWidth: 180, padding: '6px 10px', borderRadius: 6, border: '1px solid #4445', background: 'transparent', color: 'inherit', fontSize: 13 },
   scopePath: { color: '#777', fontSize: 11.5, margin: '0 0 14px', fontFamily: 'monospace' },
-  installRow: { display: 'flex', gap: 8, alignItems: 'center', padding: 12, border: '1px solid #3333', borderRadius: 8, marginBottom: 16 },
-  input: { flex: 1, padding: '6px 10px', borderRadius: 6, border: '1px solid #4445', background: 'transparent', color: 'inherit', fontSize: 13 },
-  button: { padding: '6px 14px', borderRadius: 6, border: '1px solid #5556', background: '#3335', color: 'inherit', cursor: 'pointer', fontSize: 13 },
+  installRow: { display: 'flex', flexWrap: 'wrap', rowGap: 8, gap: 8, alignItems: 'center', padding: 12, border: '1px solid #3333', borderRadius: 8, marginBottom: 16 },
+  input: { flex: 1, minWidth: 240, padding: '6px 10px', borderRadius: 6, border: '1px solid #4445', background: 'transparent', color: 'inherit', fontSize: 13 },
+  button: { padding: '6px 14px', borderRadius: 6, border: '1px solid #5556', background: '#3335', color: 'inherit', cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap' },
   primary: { background: '#2b62d9', borderColor: '#2b62d9', color: '#fff' },
   danger: { color: '#e05561' },
   label: { fontSize: 12.5, color: '#999', whiteSpace: 'nowrap' },
@@ -126,17 +138,20 @@ function RemoveButton({ disabled, onConfirm }: { disabled: boolean, onConfirm():
 export function SkillManageSection(): React.ReactElement {
   /** '' = user level; otherwise a project root path. */
   const [root, setRoot] = useState('')
+  /** Install target derived from the selection — the API's `scope` field says 'mixed' for project views. */
+  const scopeKind: 'user' | 'project' = root === '' ? 'user' : 'project'
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [customRoots, setCustomRoots] = useState<string[]>(loadCustomRoots)
   const [manualPath, setManualPath] = useState('')
-  const [scopeKind, setScopeKind] = useState<'user' | 'project'>('user')
   const [scopeLabel, setScopeLabel] = useState('')
+  const [dirs, setDirs] = useState<{ project?: string, user?: string }>({})
   const [skills, setSkills] = useState<SkillEntry[]>([])
   const [loaded, setLoaded] = useState(false)
   const [busy, setBusy] = useState(false)
   const [source, setSource] = useState('')
   const [force, setForce] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'err', text: string } | null>(null)
+  const pickRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     void api<{ workspaces: Workspace[] }>('/workspaces')
@@ -159,11 +174,11 @@ export function SkillManageSection(): React.ReactElement {
   const refresh = useCallback(async (): Promise<void> => {
     try {
       const query = root === '' ? '' : `?root=${encodeURIComponent(root)}`
-      const result = await api<{ skills: SkillEntry[], scope?: string, label?: string }>(`/skills${query}`)
+      const result = await api<{ skills: SkillEntry[], scope?: string, label?: string, dirs?: { project?: string, user?: string } }>(`/skills${query}`)
       if (!result.ok) throw new Error(result.error ?? 'unknown')
       setSkills(result.skills)
-      setScopeKind(result.scope === 'project' ? 'project' : 'user')
       setScopeLabel(result.label ?? '')
+      setDirs(result.dirs ?? {})
       setLoaded(true)
     } catch (error) {
       setMessage({ kind: 'err', text: `加载失败：${errText(error)}` })
@@ -198,6 +213,34 @@ export function SkillManageSection(): React.ReactElement {
       const result = await api<{ skill: SkillEntry }>('/install', { source: source.trim(), force, ...scopeBody() })
       if (!result.ok) throw new Error(result.error ?? '安装失败')
       setSource('')
+      setForce(false)
+      return `已安装技能 ${result.skill.name}（${scopeKind === 'project' ? '项目级' : '用户级'}）`
+    })
+  }
+
+  const MAX_FILES = 500
+  const MAX_FILE_BYTES = 2 << 20
+  const MAX_TOTAL_BYTES = 10 << 20
+
+  /** Install from a folder picked via the browser: upload contents, no paths needed. */
+  const installPicked = async (list: FileList): Promise<void> => {
+    await act(async () => {
+      const files: { path: string, data: string }[] = []
+      let totalBytes = 0
+      for (const file of Array.from(list)) {
+        const rel = file.webkitRelativePath !== '' ? file.webkitRelativePath : file.name
+        if (/(^|\/)(node_modules|\.git)(\/|$)/.test(rel)) continue
+        if (file.size > MAX_FILE_BYTES) throw new Error(`文件超过 2MB 上限：${rel}`)
+        totalBytes += file.size
+        if (totalBytes > MAX_TOTAL_BYTES) throw new Error('技能文件夹总大小超过 10MB 上限')
+        if (files.length >= MAX_FILES) throw new Error(`文件数超过 ${MAX_FILES} 上限`)
+        files.push({ path: rel, data: bytesToBase64(await file.arrayBuffer()) })
+      }
+      if (!files.some(f => f.path.split('/').pop() === 'SKILL.md')) {
+        throw new Error('所选文件夹里没有 SKILL.md，不是有效的技能包')
+      }
+      const result = await api<{ skill: SkillEntry }>('/install-upload', { files, force, ...scopeBody() })
+      if (!result.ok) throw new Error(result.error ?? '安装失败')
       setForce(false)
       return `已安装技能 ${result.skill.name}（${scopeKind === 'project' ? '项目级' : '用户级'}）`
     })
@@ -302,10 +345,39 @@ export function SkillManageSection(): React.ReactElement {
           <input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />
           覆盖同名
         </label>
+        {supportsDirPick && (
+          <>
+            <input
+              type="file"
+              multiple
+              hidden
+              ref={el => {
+                pickRef.current = el
+                if (el !== null) {
+                  el.setAttribute('webkitdirectory', '')
+                  el.setAttribute('directory', '')
+                }
+              }}
+              onChange={e => {
+                const list = e.target.files
+                if (list !== null && list.length > 0) void installPicked(list)
+                e.target.value = ''
+              }}
+            />
+            <button type="button" style={styles.button} disabled={busy} onClick={() => pickRef.current?.click()}>
+              浏览…
+            </button>
+          </>
+        )}
         <button type="button" style={{ ...styles.button, ...styles.primary }} disabled={busy} onClick={install}>
           安装到{scopeKind === 'project' ? '项目' : '用户'}
         </button>
       </div>
+      <p style={styles.scopePath}>
+        安装目标：{scopeKind === 'user'
+          ? `${dirs.user ?? '~/.dsh/skills'}（用户级）`
+          : `${dirs.project ?? `${root}/.dsh/skills`}（项目级）`}
+      </p>
 
       {message !== null && message.text !== '' && (
         <p style={{ ...styles.msg, ...(message.kind === 'ok' ? styles.ok : styles.err) }}>{message.text}</p>
