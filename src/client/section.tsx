@@ -299,6 +299,7 @@ export function SkillManageSection(): React.ReactElement {
   const [source, setSource] = useState('')
   const [sourceTab, setSourceTab] = useState<'local' | 'github'>('local')
   const [githubUrl, setGithubUrl] = useState('')
+  const [mirror, setMirror] = useState(true)
   const [force, setForce] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'err', text: string } | null>(null)
   const [copied, setCopied] = useState(false)
@@ -379,7 +380,7 @@ export function SkillManageSection(): React.ReactElement {
     if (!projectSelected && scope === 'project') { setMessage({ kind: 'err', text: '请先选择一个项目' }); return }
     void act(async () => {
       if (githubUrl.trim() === '') throw new Error('请填写 GitHub 仓库地址')
-      const result = await api<{ skill: SkillEntry }>('/install-github', { url: githubUrl.trim(), force, ...scopeBody() })
+      const result = await api<{ skill: SkillEntry }>('/install-github', { url: githubUrl.trim(), force, mirror, ...scopeBody() })
       if (!result.ok) throw new Error(result.error ?? '安装失败')
       setGithubUrl('')
       setForce(false)
@@ -585,6 +586,13 @@ export function SkillManageSection(): React.ReactElement {
             覆盖同名技能
           </label>
           <span style={styles.helpDot} title="勾选后，同名技能已存在时将被覆盖安装">?</span>
+          {sourceTab === 'github' && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginLeft: 14 }}>
+              <input type="checkbox" checked={mirror} onChange={e => setMirror(e.target.checked)} />
+              直连失败时改用镜像
+              <span style={styles.helpDot} title="直连 GitHub 失败时自动改经 ghproxy.com / ghfast.top 克隆（无需代理）">?</span>
+            </label>
+          )}
         </div>
       </div>
 

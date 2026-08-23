@@ -50,7 +50,15 @@ dsh plugin --profile web add /path/to/dsh-skill-manage
 
 ## 使用提示
 
-- **GitHub 安装**：仓库含多个技能目录时需用 `#path:` 指定（如 `github:anthropics/skills#path:skills/pdf`）
+- **GitHub 安装示例**（安装卡片切到 GitHub Tab 后直接粘贴）：
+
+  | 输入 | 说明 |
+  |---|---|
+  | `github:JimmyLv/bibigpt-skill` | 单技能仓库，自动定位 |
+  | `github:anthropics/skills#path:skills/pdf` | 多技能仓库，`#path:` 指定子目录 |
+  | `https://github.com/anthropics/skills#path:skills/docx` | 完整 URL 形式，等价 |
+
+  格式：`github:owner/repo` / `owner/repo` / 完整 HTTPS URL，均可追加 `#path:子目录`（须含 SKILL.md）。仓库含多个技能目录且未指定 `#path:` 时会报错并列出候选。
 - **代理环境**：GitHub 克隆由 dsh 进程执行，若网络需代理，请在带代理环境的终端里启动 dsh（`http_proxy` 等会继承），否则会直连超时
 - 改动即时生效，新会话可见；运行时同名技能项目级优先于用户级（官方 rank 语义）
 

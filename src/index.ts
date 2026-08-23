@@ -16,7 +16,7 @@
  * `.dsh/skills` and `.agents/skills` there, installs land in `.dsh/skills`.
  */
 
-import { execFile } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import os from 'node:os'
@@ -307,6 +307,9 @@ async function handleInstallUpload(scope: Scope, body: Record<string, unknown>):
 
 const GITHUB_CLONE_TIMEOUT_MS = 60_000
 
+/** Mirrors tried when a direct clone fails and `mirror` is requested (order = preference). */
+const GITHUB_MIRRORS = ['https://ghfast.top/', 'https://gh-proxy.com/']
+
 /** Normalize a user-supplied repo reference to a clone URL plus an optional path inside it. */
 function parseRepoInput(raw: string): { url: string, subPath?: string } {
   const input = raw.trim()
@@ -335,26 +338,77 @@ function parseRepoInput(raw: string): { url: string, subPath?: string } {
   return { url: url.replace(/\/+$/, ''), subPath }
 }
 
+/**
+ * cloneRepo runs `git clone --depth 1` into cloneDir; resolves or rejects with
+ * a descriptive message. Uses spawn with a detached process group so the whole
+ * git tree (git-remote-https children included) dies on timeout.
+ */
+function cloneRepo(url: string, cloneDir: string, timeoutMs: number = GITHUB_CLONE_TIMEOUT_MS): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', ['clone', '--depth', '1', url, cloneDir], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] })
+    let stderr = ''
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      try { process.kill(-child.pid!, 'SIGTERM') } catch { /* already gone */ }
+      reject(new ApiError(400, `克隆超时（${timeoutMs / 1000}s）：${url}`))
+    }, timeoutMs)
+    child.stderr!.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    child.on('error', (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(new ApiError(400, `启动 git 失败：${errText(error)}`))
+    })
+    child.on('close', (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (code === 0) {
+        resolve()
+        return
+      }
+      const detail = stderr.split('\n').map(s => s.trim()).filter(Boolean).slice(-4).join('\n')
+      reject(new ApiError(400, `${url}\n${detail !== '' ? detail : `git clone 退出码 ${String(code)}`}`))
+    })
+  })
+}
+
 /** Clone into a temp dir; locate the SKILL.md folder (subPath or unique match). */
 async function handleInstallGithub(scope: Scope, body: Record<string, unknown>): Promise<SkillEntry> {
   const raw = typeof body.url === 'string' ? body.url : ''
   const { url, subPath } = parseRepoInput(raw)
+  const mirror = body.mirror === true
   const force = body.force === true
 
   const tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'dsh-skill-github-'))
   try {
     const cloneDir = path.join(tmpRoot, 'repo')
-    await new Promise<void>((resolve, reject) => {
-      execFile('git', ['clone', '--depth', '1', url, cloneDir], { timeout: GITHUB_CLONE_TIMEOUT_MS }, (error) => {
-        if (error === null) resolve()
-        else {
-          const stderr = typeof error === 'object' && error !== null && 'stderr' in error ? String((error as { stderr?: string }).stderr ?? '') : ''
-          const detail = stderr.split('\n').map(s => s.trim()).filter(Boolean).slice(-4).join('\n')
-          const noProxy = Object.keys(process.env).filter(k => k.toLowerCase().includes('proxy')).length === 0
-          reject(new ApiError(400, `克隆仓库失败:${detail !== '' ? `\n${detail}` : errText(error)}${noProxy ? '\n检测到当前 dsh 进程没有代理环境变量；若网络需要代理，请在终端里启动 dsh 后重试。' : ''}`))
+    try {
+      await cloneRepo(url, cloneDir)
+    } catch (directError) {
+      const noProxy = Object.keys(process.env).filter(k => k.toLowerCase().includes('proxy')).length === 0
+      if (!mirror) {
+        throw new ApiError(400, `${errText(directError)}${noProxy ? '\n检测到当前 dsh 进程没有代理环境变量；若网络需要代理，请在终端里启动 dsh，或勾选「直连失败时改用镜像」重试。' : ''}`)
+      }
+      let mirrorError: unknown = directError
+      for (const prefix of GITHUB_MIRRORS) {
+        const cloneDir = path.join(tmpRoot, 'repo')
+        await rm(cloneDir, { recursive: true, force: true }).catch(() => {})
+        try {
+          // Mirror anchors work as https://<prefix>https://github.com/...
+          await cloneRepo(`${prefix}${url}`, cloneDir, 45_000)
+          mirrorError = null
+          break
+        } catch (error) {
+          mirrorError = error
         }
-      })
-    })
+      }
+      if (mirrorError !== null) {
+        throw new ApiError(400, `直连与镜像均失败（已尝试 ${GITHUB_MIRRORS.length} 个镜像）：\n${errText(mirrorError)}`)
+      }
+    }
 
     let srcDir = path.join(cloneDir, subPath ?? '')
     if (subPath !== undefined) {
