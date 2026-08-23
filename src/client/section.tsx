@@ -88,6 +88,7 @@ const styles: Record<string, CSSProperties> = {
 
   installCard: { display: 'flex', flexDirection: 'column', gap: 12, padding: '16px', border: '1px solid #3335', borderRadius: 10, marginBottom: 22 },
   installTitle: { margin: 0, fontSize: 15, fontWeight: 600 },
+  sourceSeg: { display: 'inline-flex', gap: 0, border: '1px solid #4445', borderRadius: 8, overflow: 'hidden', alignSelf: 'flex-start' },
   installLead: { display: 'flex', alignItems: 'center', gap: 8, color: '#bbb', fontSize: 13 },
   installRow: { display: 'flex', gap: 10, alignItems: 'center' },
   input: { flex: 1, minWidth: 220, padding: '8px 12px', borderRadius: 8, border: '1px solid #4446', background: 'transparent', color: 'inherit', fontSize: 13 },
@@ -296,6 +297,8 @@ export function SkillManageSection(): React.ReactElement {
   const [loaded, setLoaded] = useState(false)
   const [busy, setBusy] = useState(false)
   const [source, setSource] = useState('')
+  const [sourceTab, setSourceTab] = useState<'local' | 'github'>('local')
+  const [githubUrl, setGithubUrl] = useState('')
   const [force, setForce] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'err', text: string } | null>(null)
   const [copied, setCopied] = useState(false)
@@ -367,6 +370,18 @@ export function SkillManageSection(): React.ReactElement {
       const result = await api<{ skill: SkillEntry }>('/install', { source: source.trim(), force, ...scopeBody() })
       if (!result.ok) throw new Error(result.error ?? '安装失败')
       setSource('')
+      setForce(false)
+      return `已安装技能 ${result.skill.name}（${scopeKind === 'project' ? '项目级' : '用户级'}）`
+    })
+  }
+
+  const installGithub = (): void => {
+    if (!projectSelected && scope === 'project') { setMessage({ kind: 'err', text: '请先选择一个项目' }); return }
+    void act(async () => {
+      if (githubUrl.trim() === '') throw new Error('请填写 GitHub 仓库地址')
+      const result = await api<{ skill: SkillEntry }>('/install-github', { url: githubUrl.trim(), force, ...scopeBody() })
+      if (!result.ok) throw new Error(result.error ?? '安装失败')
+      setGithubUrl('')
       setForce(false)
       return `已安装技能 ${result.skill.name}（${scopeKind === 'project' ? '项目级' : '用户级'}）`
     })
@@ -454,7 +469,7 @@ export function SkillManageSection(): React.ReactElement {
     )
   }
 
-  const installDisabled = (scope === 'project' && projectRoot === '') || busy
+  const installDisabled = busy
   const installButtonLabel = scope === 'project' ? '安装到项目' : '安装到用户'
 
   return (
@@ -496,16 +511,42 @@ export function SkillManageSection(): React.ReactElement {
 
       <div style={styles.installCard}>
         <h4 style={styles.installTitle}>安装技能</h4>
-        <div style={styles.installLead}><span aria-hidden>📁</span>选择包含 SKILL.md 的技能目录</div>
+        <div style={styles.sourceSeg}>
+          <button
+            type="button"
+            style={{ ...styles.segBtn, padding: '5px 14px', ...(sourceTab === 'local' ? styles.segBtnActive : {}) }}
+            onClick={() => setSourceTab('local')}
+          >
+            本地文件夹
+          </button>
+          <button
+            type="button"
+            style={{ ...styles.segBtn, padding: '5px 14px', ...(sourceTab === 'github' ? styles.segBtnActive : {}) }}
+            onClick={() => setSourceTab('github')}
+          >
+            GitHub
+          </button>
+        </div>
+        <div style={styles.installLead}><span aria-hidden>📁</span>{sourceTab === 'local' ? '选择包含 SKILL.md 的技能目录' : '粘贴技能仓库地址，自动克隆并定位 SKILL.md'}</div>
         <div style={styles.installRow}>
-          <input
-            style={styles.input}
-            placeholder="/path/to/skill-folder"
-            value={source}
-            onChange={e => setSource(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !installDisabled) install() }}
-          />
-          {supportsDirPick && (
+          {sourceTab === 'local' ? (
+            <input
+              style={styles.input}
+              placeholder="/path/to/skill-folder"
+              value={source}
+              onChange={e => setSource(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !installDisabled) install() }}
+            />
+          ) : (
+            <input
+              style={styles.input}
+              placeholder="github:owner/repo 或 https://github.com/owner/repo#path:skills/demo"
+              value={githubUrl}
+              onChange={e => setGithubUrl(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !installDisabled) installGithub() }}
+            />
+          )}
+          {sourceTab === 'local' && supportsDirPick && (
             <>
               <input
                 type="file"
@@ -529,8 +570,13 @@ export function SkillManageSection(): React.ReactElement {
               </button>
             </>
           )}
-          <button type="button" style={{ ...styles.button, ...styles.primary }} disabled={installDisabled} onClick={install}>
-            {installButtonLabel}
+          <button
+            type="button"
+            style={{ ...styles.button, ...styles.primary }}
+            disabled={installDisabled}
+            onClick={sourceTab === 'local' ? install : installGithub}
+          >
+            {busy ? '安装中…' : installButtonLabel}
           </button>
         </div>
         <div style={styles.forceRow}>
