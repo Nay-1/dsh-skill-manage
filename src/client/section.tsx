@@ -102,6 +102,9 @@ const styles: Record<string, CSSProperties> = {
   sectionHeader: { display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 10px' },
   sectionTitle: { margin: 0, fontSize: 15, fontWeight: 600 },
   refresh: { marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5, background: 'transparent', border: '1px solid #4445', borderRadius: 8, padding: '5px 12px', color: '#bbb', cursor: 'pointer', fontSize: 12.5, whiteSpace: 'nowrap' },
+  searchRow: { display: 'flex', alignItems: 'center', gap: 8, background: NEUTRAL_FILL, border: '1px solid #3334', borderRadius: 8, padding: '8px 12px', marginBottom: 10 },
+  searchIcon: { flexShrink: 0, fontSize: 13, opacity: 0.7 },
+  searchInput: { flex: 1, minWidth: 0, background: 'transparent', border: 'none', outline: 'none', color: 'inherit', fontSize: 13 },
 
   list: { display: 'flex', flexDirection: 'column', gap: 10 },
   row: { display: 'flex', gap: 14, alignItems: 'center', padding: '14px 16px', border: '1px solid #3334', borderRadius: 10 },
@@ -296,6 +299,7 @@ export function SkillManageSection(): React.ReactElement {
   const [force, setForce] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'err', text: string } | null>(null)
   const [copied, setCopied] = useState(false)
+  const [search, setSearch] = useState('')
   const pickRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
@@ -419,6 +423,11 @@ export function SkillManageSection(): React.ReactElement {
   }
 
   const scopeTitle = scope === 'project' ? '项目级技能' : '用户级技能'
+
+  const s = search.trim().toLowerCase()
+  const filteredSkills = s === ''
+    ? skills
+    : skills.filter(k => k.name.toLowerCase().includes(s))
 
   const renderRow = (skill: SkillEntry): ReactElement => {
     const enabled = skill.modelInvocable || skill.userInvocable
@@ -545,13 +554,25 @@ export function SkillManageSection(): React.ReactElement {
         </button>
       </div>
 
+      <div style={styles.searchRow}>
+        <span aria-hidden style={styles.searchIcon}>🔍</span>
+        <input
+          style={styles.searchInput}
+          placeholder="搜索技能名称…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+      </div>
+
       <div style={styles.list}>
         {scope === 'project' && projectRoot === '' ? (
           <p style={styles.empty}>请选择一个项目以查看其技能。</p>
         ) : loaded && skills.length === 0 ? (
           <p style={styles.empty}>还没有已安装的技能。</p>
+        ) : filteredSkills.length === 0 ? (
+          <p style={styles.empty}>无匹配技能。</p>
         ) : (
-          skills.map(renderRow)
+          filteredSkills.map(renderRow)
         )}
       </div>
     </div>
