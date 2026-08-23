@@ -8,7 +8,8 @@
 - **安装**（三种来源）：
   - 本地文件夹：填写路径安装
   - 浏览上传：浏览器目录选择器，选中即上传安装（无需暴露绝对路径）
-  - GitHub：粘贴 `github:owner/repo`、`owner/repo` 或完整 HTTPS URL（支持 `#path:子目录`），后台浅克隆后自动定位含 `SKILL.md` 的目录
+  - GitHub：粘贴 `github:owner/repo`、`owner/repo` 或完整 HTTPS URL（支持 `#path:子目录`），后台浅克隆后自动定位含 `SKILL.md` 的目录；直连失败自动改用镜像（`ghfast.top` / `gh-proxy.com`）重试，默认开启
+  - 搜索（skills.sh）：输入关键词在线搜索技能商店，结果展示技能名/仓库/安装数，点「安装」即按技能名引导仓库内 BFS 定位后一键安装
   - 安装校验 `SKILL.md` frontmatter（kebab-case 名称、description），同名冲突默认拒绝，可勾选覆盖
 - **卸载**：两步确认删除，操作限定在受管技能目录内
 - **启停**：每个技能的「启用 / 禁用」一键同时改写 `disable-model-invocation` 与 `user-invocable` 两个 frontmatter 键
@@ -59,7 +60,9 @@ dsh plugin --profile web add /path/to/dsh-skill-manage
   | `https://github.com/anthropics/skills#path:skills/docx` | 完整 URL 形式，等价 |
 
   格式：`github:owner/repo` / `owner/repo` / 完整 HTTPS URL，均可追加 `#path:子目录`（须含 SKILL.md）。仓库含多个技能目录且未指定 `#path:` 时会报错并列出候选。
-- **代理环境**：GitHub 克隆由 dsh 进程执行，若网络需代理，请在带代理环境的终端里启动 dsh（`http_proxy` 等会继承），否则会直连超时
+- **搜索安装（skills.sh）**：安装卡片切到「🔍 搜索」Tab，输入关键词回车；结果按技能名匹配仓库内 BFS 定位（无需知道仓库内真实路径），点「安装」即装。商店接口为 `https://www.skills.sh/api/search`（公开，无需鉴权）。
+- **镜像回退**：GitHub 直连失败时自动改经 `ghfast.top` / `gh-proxy.com` 浅克隆（默认勾选，可在 GitHub Tab 关闭），无代理环境也可安装
+- **代理环境**：GitHub 克隆由 dsh 进程执行，若网络需代理，请在带代理环境的终端里启动 dsh（`http_proxy` 等会继承），否则会直连超时（可改用镜像回退）
 - 改动即时生效，新会话可见；运行时同名技能项目级优先于用户级（官方 rank 语义）
 
 ## 架构
@@ -67,7 +70,8 @@ dsh plugin --profile web add /path/to/dsh-skill-manage
 ```
 src/index.ts          宿主半侧：webServer 挂载 /dsh-skill-manage JSON 路由
                       （GET /skills、GET /workspaces；
-                       POST /install、/install-upload、/install-github、/remove、/toggle）
+                       POST /search-skills、/install、/install-upload、
+                       /install-github、/remove、/toggle）
 src/client/           浏览器半侧：注册 settings.section 槽位渲染 React 页面
 build.mjs             esbuild 构建：宿主 ESM lib/index.js +
                       浏览器 lazy-CJS factory lib/client.js（复刻官方 clientBundle 契约）

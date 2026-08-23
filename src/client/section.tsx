@@ -10,6 +10,16 @@ export interface SkillEntry {
   userInvocable: boolean
 }
 
+type SourceTab = 'local' | 'github' | 'search'
+
+interface SearchHit {
+  id: string
+  skillId: string
+  name: string
+  installs: number
+  source: string
+}
+
 interface Workspace {
   path: string
   title: string
@@ -34,6 +44,12 @@ function bytesToBase64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
   }
   return btoa(binary)
+}
+
+function formatInstalls(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return String(n)
 }
 
 async function api<T>(route: string, body?: Record<string, unknown>): Promise<T & Envelope> {
@@ -91,6 +107,10 @@ const styles: Record<string, CSSProperties> = {
   sourceSeg: { display: 'inline-flex', gap: 0, border: '1px solid #4445', borderRadius: 8, overflow: 'hidden', alignSelf: 'flex-start' },
   installLead: { display: 'flex', alignItems: 'center', gap: 8, color: '#bbb', fontSize: 13 },
   installRow: { display: 'flex', gap: 10, alignItems: 'center' },
+  hitList: { display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 320, overflowY: 'auto' },
+  hitRow: { display: 'flex', gap: 10, alignItems: 'center', padding: '8px 12px', border: '1px solid #3334', borderRadius: 8 },
+  hitName: { fontWeight: 600, fontSize: 13.5 },
+  hitMeta: { color: '#999', fontSize: 12, marginTop: 2 },
   input: { flex: 1, minWidth: 220, padding: '8px 12px', borderRadius: 8, border: '1px solid #4446', background: 'transparent', color: 'inherit', fontSize: 13 },
   button: { padding: '8px 16px', borderRadius: 8, border: '1px solid #5557', background: '#3337', color: 'inherit', cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap' },
   steady: { background: '#3a3d41', border: '1px solid #6668', color: '#eee' },
@@ -297,9 +317,13 @@ export function SkillManageSection(): React.ReactElement {
   const [loaded, setLoaded] = useState(false)
   const [busy, setBusy] = useState(false)
   const [source, setSource] = useState('')
-  const [sourceTab, setSourceTab] = useState<'local' | 'github'>('local')
+  const [sourceTab, setSourceTab] = useState<SourceTab>('local')
   const [githubUrl, setGithubUrl] = useState('')
   const [mirror, setMirror] = useState(true)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchHits, setSearchHits] = useState<SearchHit[] | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [installingId, setInstallingId] = useState<string | null>(null)
   const [force, setForce] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'err', text: string } | null>(null)
   const [copied, setCopied] = useState(false)
@@ -391,6 +415,35 @@ export function SkillManageSection(): React.ReactElement {
   const MAX_FILES = 500
   const MAX_FILE_BYTES = 2 << 20
   const MAX_TOTAL_BYTES = 10 << 20
+
+  const searchSkills = (): void => {
+    setSearching(true)
+    void act(async () => {
+      const q = searchQuery.trim()
+      if (q === '') throw new Error('请输入技能关键词')
+      const result = await api<{ hits: SearchHit[], count?: number }>('/search-skills', { q, limit: 12 })
+      if (!result.ok) throw new Error(result.error ?? '搜索失败')
+      setSearchHits(result.hits ?? [])
+      return ''
+    }).finally(() => setSearching(false))
+  }
+
+  const installHit = (hit: SearchHit): void => {
+    if (!projectSelected && scope === 'project') { setMessage({ kind: 'err', text: '请先选择一个项目' }); return }
+    setInstallingId(hit.id)
+    void act(async () => {
+      const result = await api<{ skill: SkillEntry }>('/install-github', {
+        url: `github:${hit.source}`,
+        skill: hit.skillId,
+        force,
+        mirror,
+        ...scopeBody(),
+      })
+      if (!result.ok) throw new Error(result.error ?? '安装失败')
+      setForce(false)
+      return `已安装技能 ${result.skill.name}（${scopeKind === 'project' ? '项目级' : '用户级'}）`
+    }).finally(() => setInstallingId(null))
+  }
 
   const installPicked = async (list: FileList): Promise<void> => {
     if (!projectSelected && scope === 'project') { setMessage({ kind: 'err', text: '请先选择一个项目' }); return }
@@ -527,9 +580,56 @@ export function SkillManageSection(): React.ReactElement {
           >
             GitHub
           </button>
+          <button
+            type="button"
+            style={{ ...styles.segBtn, padding: '5px 14px', ...(sourceTab === 'search' ? styles.segBtnActive : {}) }}
+            onClick={() => setSourceTab('search')}
+          >
+            🔍 搜索
+          </button>
         </div>
-        <div style={styles.installLead}><span aria-hidden>📁</span>{sourceTab === 'local' ? '选择包含 SKILL.md 的技能目录' : '粘贴技能仓库地址，自动克隆并定位 SKILL.md'}</div>
-        <div style={styles.installRow}>
+        <div style={styles.installLead}><span aria-hidden>{sourceTab === 'local' ? '📁' : sourceTab === 'github' ? '🔗' : '🔍'}</span>
+          {sourceTab === 'local' ? '选择包含 SKILL.md 的技能目录'
+            : sourceTab === 'github' ? '粘贴技能仓库地址，自动克隆并定位 SKILL.md'
+              : '在 skills.sh 商店搜索技能，点结果一键安装'}
+        </div>
+        {sourceTab === 'search' ? (
+          <>
+            <div style={styles.installRow}>
+              <input
+                style={styles.input}
+                placeholder="例如：pdf、tdd、frontend-design"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !busy && !searching) searchSkills() }}
+              />
+              <button type="button" style={{ ...styles.button, ...styles.primary }} disabled={busy || searching} onClick={searchSkills}>
+                {searching ? '搜索中…' : '搜索'}
+              </button>
+            </div>
+            {searchHits !== null && (
+              <div style={styles.hitList}>
+                {searchHits.length === 0
+                  ? (
+                    <div style={styles.hitRow}><span style={styles.hitMeta}>未找到相关技能，换个关键词试试</span></div>
+                  )
+                  : searchHits.map(hit => (
+                    <div key={hit.id} style={styles.hitRow}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={styles.hitName}>{hit.name}</div>
+                        <div style={styles.hitMeta}>{hit.source} · {formatInstalls(hit.installs)} 次安装</div>
+                      </div>
+                      <button type="button" style={{ ...styles.button, ...styles.primary, flexShrink: 0, padding: '5px 12px' }} disabled={busy || installingId !== null} onClick={() => installHit(hit)}>
+                        {installingId === hit.id ? '安装中…' : '安装'}
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </>
+        ) : (
+        <>
+          <div style={styles.installRow}>
           {sourceTab === 'local' ? (
             <input
               style={styles.input}
@@ -579,21 +679,23 @@ export function SkillManageSection(): React.ReactElement {
           >
             {busy ? '安装中…' : installButtonLabel}
           </button>
-        </div>
-        <div style={styles.forceRow}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
-            <input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />
-            覆盖同名技能
-          </label>
-          <span style={styles.helpDot} title="勾选后，同名技能已存在时将被覆盖安装">?</span>
-          {sourceTab === 'github' && (
-            <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginLeft: 14 }}>
-              <input type="checkbox" checked={mirror} onChange={e => setMirror(e.target.checked)} />
-              直连失败时改用镜像
-              <span style={styles.helpDot} title="直连 GitHub 失败时自动改经 ghproxy.com / ghfast.top 克隆（无需代理）">?</span>
+          </div>
+          <div style={styles.forceRow}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
+              <input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />
+              覆盖同名技能
             </label>
-          )}
-        </div>
+            <span style={styles.helpDot} title="勾选后，同名技能已存在时将被覆盖安装">?</span>
+            {sourceTab === 'github' && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginLeft: 14 }}>
+                <input type="checkbox" checked={mirror} onChange={e => setMirror(e.target.checked)} />
+                直连失败时改用镜像
+                <span style={styles.helpDot} title="直连 GitHub 失败时自动改经 ghfast.top / gh-proxy.com 克隆（无需代理）">?</span>
+              </label>
+            )}
+          </div>
+        </>
+        )}
       </div>
 
       {message !== null && message.text !== '' && (
