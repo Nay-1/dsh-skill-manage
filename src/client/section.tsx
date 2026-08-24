@@ -683,7 +683,7 @@ export function SkillManageSection(): React.ReactElement {
         </div>
         <div style={styles.installLead}><span aria-hidden>{sourceTab === 'local' ? '📁' : sourceTab === 'github' ? '🔗' : '🔍'}</span>
           {sourceTab === 'local' ? '选择包含 SKILL.md 的技能目录'
-            : sourceTab === 'github' ? '粘贴技能仓库地址，自动克隆并定位 SKILL.md'
+            : sourceTab === 'github' ? '粘贴仓库或 /tree/ 目录链接：单技能直装，父目录出安装清单'
               : '在 skills.sh 商店搜索技能，点结果一键安装'}
         </div>
         {sourceTab === 'search' ? (
@@ -739,9 +739,6 @@ export function SkillManageSection(): React.ReactElement {
               onChange={e => setGithubUrl(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !installDisabled) installGithub() }}
             />
-          )}
-          {sourceTab === 'github' && !plan && (
-            <span style={styles.installLead}><span aria-hidden>💡</span>粘贴 /tree/ 目录链接：单技能直装；父目录出安装清单</span>
           )}
           {sourceTab === 'local' && supportsDirPick && (
             <>
