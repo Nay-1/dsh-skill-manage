@@ -20,6 +20,24 @@ interface SearchHit {
   source: string
 }
 
+interface PlanSkill {
+  key: string
+  exists: boolean
+}
+
+interface InstallPlan {
+  total: number
+  skills: PlanSkill[]
+  source: { url: string, branch?: string, subPath?: string }
+}
+
+interface GithubInstallResult extends Envelope {
+  skills?: SkillEntry[]
+  failed?: Array<{ key: string, error: string }>
+  plan?: InstallPlan
+  exists?: boolean
+}
+
 interface Workspace {
   path: string
   title: string
@@ -111,6 +129,11 @@ const styles: Record<string, CSSProperties> = {
   hitRow: { display: 'flex', gap: 10, alignItems: 'center', padding: '8px 12px', border: '1px solid #3334', borderRadius: 8 },
   hitName: { fontWeight: 600, fontSize: 13.5 },
   hitMeta: { color: '#999', fontSize: 12, marginTop: 2 },
+  hitExists: { color: '#e0a23c', fontSize: 12, marginTop: 2 },
+  planPanel: { display: 'flex', flexDirection: 'column', gap: 10, padding: '10px 12px', border: '1px solid #e0a23c55', borderRadius: 10, background: 'rgba(224, 162, 60, 0.05)' },
+  planHeader: { display: 'flex', alignItems: 'center', gap: 10 },
+  planTitle: { fontWeight: 650, fontSize: 13.5 },
+  planWarn: { color: '#e0a23c', fontSize: 12.5 },
   input: { flex: 1, minWidth: 220, padding: '8px 12px', borderRadius: 8, border: '1px solid #4446', background: 'transparent', color: 'inherit', fontSize: 13 },
   button: { padding: '8px 16px', borderRadius: 8, border: '1px solid #5557', background: '#3337', color: 'inherit', cursor: 'pointer', fontSize: 13, whiteSpace: 'nowrap' },
   steady: { background: '#3a3d41', border: '1px solid #6668', color: '#eee' },
@@ -324,7 +347,10 @@ export function SkillManageSection(): React.ReactElement {
   const [searchHits, setSearchHits] = useState<SearchHit[] | null>(null)
   const [searching, setSearching] = useState(false)
   const [installingId, setInstallingId] = useState<string | null>(null)
-  const [force, setForce] = useState(false)
+  const [existsPrompt, setExistsPrompt] = useState<{ text: string, retry: () => void } | null>(null)
+  const [plan, setPlan] = useState<InstallPlan | null>(null)
+  const [planChecked, setPlanChecked] = useState<Set<string>>(new Set())
+  const [planConfirmed, setPlanConfirmed] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'err', text: string } | null>(null)
   const [copied, setCopied] = useState(false)
   const [search, setSearch] = useState('')
@@ -388,33 +414,84 @@ export function SkillManageSection(): React.ReactElement {
   const projectSelected = scope === 'project' && projectRoot !== ''
   const installTargetPath = root === '' ? (dirs.user ?? USER_HOME_PATH) : (dirs.project ?? root)
 
-  const install = (): void => {
+  const scopeKindLabel = scopeKind === 'project' ? '项目级' : '用户级'
+
+  const summarizeInstalled = (skills: SkillEntry[], failed?: Array<{ key: string, error: string }>): string => {
+    let text = skills.length === 1
+      ? `已安装技能 ${skills[0].name}（${scopeKindLabel}）`
+      : `已安装 ${skills.length} 个技能：${skills.map(s => s.name).join('、')}`
+    if (failed !== undefined && failed.length > 0) {
+      text += `；失败 ${failed.length} 个（${failed.map(f => `${f.key}: ${f.error.slice(0, 40)}`).join('；')}）`
+    }
+    return text
+  }
+
+  /** If the response is a conflict, show the inline reminder and wire the retry; returns true. */
+  const handleExists = (result: Envelope & { exists?: boolean }, retry: () => void): boolean => {
+    if (result.ok || result.exists !== true) return false
+    setExistsPrompt({ text: result.error ?? '技能已存在，是否覆盖安装？', retry })
+    return true
+  }
+
+  const install = (overwrite = false): void => {
     if (!projectSelected && scope === 'project') { setMessage({ kind: 'err', text: '请先选择一个项目' }); return }
     void act(async () => {
       if (source.trim() === '') throw new Error('请填写本地技能文件夹路径')
-      const result = await api<{ skill: SkillEntry }>('/install', { source: source.trim(), force, ...scopeBody() })
-      if (!result.ok) throw new Error(result.error ?? '安装失败')
+      const result = await api<Envelope & { skill?: SkillEntry }>('/install', { source: source.trim(), ...(overwrite ? { force: true } : {}), ...scopeBody() })
+      if (!result.ok) {
+        if (handleExists(result, () => install(true))) return ''
+        throw new Error(result.error ?? '安装失败')
+      }
       setSource('')
-      setForce(false)
-      return `已安装技能 ${result.skill.name}（${scopeKind === 'project' ? '项目级' : '用户级'}）`
+      return `已安装技能 ${result.skill!.name}（${scopeKindLabel}）`
     })
   }
+
+  const doGithub = (url: string, overrides: Record<string, unknown> = {}): Promise<void> => (
+    act(async () => {
+      const result = await api<GithubInstallResult>('/install-github', { url, mirror, ...scopeBody(), ...overrides })
+      if (result.ok && result.skills !== undefined) {
+        return summarizeInstalled(result.skills, result.failed)
+      }
+      if (result.plan !== undefined) {
+        setPlan(result.plan)
+        setPlanChecked(new Set(result.plan.skills.filter(s => !s.exists).map(s => s.key)))
+        setPlanConfirmed(false)
+        return ''
+      }
+      if (!result.ok) {
+        if (handleExists(result, () => doGithub(url, { force: true }))) return ''
+        throw new Error(result.error ?? '安装失败')
+      }
+      throw new Error('安装失败')
+    })
+  )
 
   const installGithub = (): void => {
     if (!projectSelected && scope === 'project') { setMessage({ kind: 'err', text: '请先选择一个项目' }); return }
-    void act(async () => {
-      if (githubUrl.trim() === '') throw new Error('请填写 GitHub 仓库地址')
-      const result = await api<{ skill: SkillEntry }>('/install-github', { url: githubUrl.trim(), force, mirror, ...scopeBody() })
-      if (!result.ok) throw new Error(result.error ?? '安装失败')
-      setGithubUrl('')
-      setForce(false)
-      return `已安装技能 ${result.skill.name}（${scopeKind === 'project' ? '项目级' : '用户级'}）`
-    })
+    if (githubUrl.trim() === '') { setMessage({ kind: 'err', text: '请填写 GitHub 仓库地址' }); return }
+    void doGithub(githubUrl.trim())
   }
 
-  const MAX_FILES = 500
-  const MAX_FILE_BYTES = 2 << 20
-  const MAX_TOTAL_BYTES = 10 << 20
+  const confirmBatch = (): void => {
+    if (plan === null) return
+    const keys = [...planChecked]
+    if (keys.length === 0) { setMessage({ kind: 'err', text: '请至少勾选一个技能' }); return }
+    const source = plan.source
+    setPlan(null)
+    void act(async () => {
+      const result = await api<GithubInstallResult>('/install-github', {
+        url: source.url,
+        branch: source.branch,
+        subPath: source.subPath,
+        mirror,
+        batch: keys,
+        ...scopeBody(),
+      })
+      if (!result.ok) throw new Error(result.error ?? '安装失败')
+      return summarizeInstalled(result.skills ?? [], result.failed)
+    })
+  }
 
   const searchSkills = (): void => {
     setSearching(true)
@@ -428,24 +505,38 @@ export function SkillManageSection(): React.ReactElement {
     }).finally(() => setSearching(false))
   }
 
-  const installHit = (hit: SearchHit): void => {
-    if (!projectSelected && scope === 'project') { setMessage({ kind: 'err', text: '请先选择一个项目' }); return }
-    setInstallingId(hit.id)
-    void act(async () => {
-      const result = await api<{ skill: SkillEntry }>('/install-github', {
+  const doHit = (hit: SearchHit, overwrite = false): Promise<void> => {
+    if (!projectSelected && scope === 'project') {
+      setMessage({ kind: 'err', text: '请先选择一个项目' })
+      return Promise.resolve()
+    }
+    return act(async () => {
+      const result = await api<GithubInstallResult>('/install-github', {
         url: `github:${hit.source}`,
         skill: hit.skillId,
-        force,
         mirror,
+        ...(overwrite ? { force: true } : {}),
         ...scopeBody(),
       })
-      if (!result.ok) throw new Error(result.error ?? '安装失败')
-      setForce(false)
-      return `已安装技能 ${result.skill.name}（${scopeKind === 'project' ? '项目级' : '用户级'}）`
-    }).finally(() => setInstallingId(null))
+      if (!result.ok) {
+        if (handleExists(result, () => void doHit(hit, true))) return ''
+        throw new Error(result.error ?? '安装失败')
+      }
+      if (result.skills === undefined) throw new Error('安装失败')
+      return summarizeInstalled(result.skills)
+    })
   }
 
-  const installPicked = async (list: FileList): Promise<void> => {
+  const installHit = (hit: SearchHit): void => {
+    setInstallingId(hit.id)
+    void doHit(hit).finally(() => setInstallingId(null))
+  }
+
+  const MAX_FILES = 500
+  const MAX_FILE_BYTES = 2 << 20
+  const MAX_TOTAL_BYTES = 10 << 20
+
+  const installPicked = async (list: FileList, overwrite = false): Promise<void> => {
     if (!projectSelected && scope === 'project') { setMessage({ kind: 'err', text: '请先选择一个项目' }); return }
     await act(async () => {
       const files: { path: string, data: string }[] = []
@@ -462,10 +553,12 @@ export function SkillManageSection(): React.ReactElement {
       if (!files.some(f => f.path.split('/').pop() === 'SKILL.md')) {
         throw new Error('所选文件夹里没有 SKILL.md，不是有效的技能包')
       }
-      const result = await api<{ skill: SkillEntry }>('/install-upload', { files, force, ...scopeBody() })
-      if (!result.ok) throw new Error(result.error ?? '安装失败')
-      setForce(false)
-      return `已安装技能 ${result.skill.name}（${scopeKind === 'project' ? '项目级' : '用户级'}）`
+      const result = await api<Envelope & { skill?: SkillEntry }>('/install-upload', { files, ...(overwrite ? { force: true } : {}), ...scopeBody() })
+      if (!result.ok) {
+        if (handleExists(result, () => void installPicked(list, true))) return ''
+        throw new Error(result.error ?? '安装失败')
+      }
+      return `已安装技能 ${result.skill!.name}（${scopeKindLabel}）`
     })
   }
 
@@ -641,11 +734,14 @@ export function SkillManageSection(): React.ReactElement {
           ) : (
             <input
               style={styles.input}
-              placeholder="github:owner/repo 或 https://github.com/owner/repo#path:skills/demo"
+              placeholder="github:owner/repo 或 https://github.com/owner/repo/tree/main/skills"
               value={githubUrl}
               onChange={e => setGithubUrl(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !installDisabled) installGithub() }}
             />
+          )}
+          {sourceTab === 'github' && !plan && (
+            <span style={styles.installLead}><span aria-hidden>💡</span>粘贴 /tree/ 目录链接：单技能直装；父目录出安装清单</span>
           )}
           {sourceTab === 'local' && supportsDirPick && (
             <>
@@ -675,28 +771,75 @@ export function SkillManageSection(): React.ReactElement {
             type="button"
             style={{ ...styles.button, ...styles.primary }}
             disabled={installDisabled}
-            onClick={sourceTab === 'local' ? install : installGithub}
+            onClick={() => (sourceTab === 'local' ? install() : installGithub())}
           >
             {busy ? '安装中…' : installButtonLabel}
           </button>
           </div>
           <div style={styles.forceRow}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
-              <input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />
-              覆盖同名技能
-            </label>
-            <span style={styles.helpDot} title="勾选后，同名技能已存在时将被覆盖安装">?</span>
             {sourceTab === 'github' && (
-              <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', marginLeft: 14 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
                 <input type="checkbox" checked={mirror} onChange={e => setMirror(e.target.checked)} />
                 直连失败时改用镜像
                 <span style={styles.helpDot} title="直连 GitHub 失败时自动改经 ghfast.top / gh-proxy.com 克隆（无需代理）">?</span>
               </label>
             )}
           </div>
+          {sourceTab === 'github' && plan !== null && (
+            <div style={styles.planPanel}>
+              <div style={styles.planHeader}>
+                <span style={styles.planTitle}>找到 {plan.total} 个技能</span>
+                {plan.total > 15 && !planConfirmed && (
+                  <span style={styles.planWarn}>共 {plan.total} 个技能，确认要继续吗</span>
+                )}
+              </div>
+              <div style={styles.hitList}>
+                {plan.skills.map(item => (
+                  <label key={item.key} style={styles.hitRow}>
+                    <input
+                      type="checkbox"
+                      checked={planChecked.has(item.key)}
+                      onChange={e => setPlanChecked(prev => {
+                        const next = new Set(prev)
+                        if (e.target.checked) next.add(item.key)
+                        else next.delete(item.key)
+                        return next
+                      })}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={styles.hitName}>{item.key}</div>
+                      {item.exists && <div style={styles.hitExists}>已存在（勾选将覆盖）</div>}
+                    </div>
+                  </label>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                {plan.total > 15 && !planConfirmed
+                  ? (
+                    <button type="button" style={{ ...styles.button, ...styles.primary }} onClick={() => setPlanConfirmed(true)}>
+                      继续安装（{plan.total} 个）
+                    </button>
+                  )
+                  : (
+                    <button type="button" style={{ ...styles.button, ...styles.primary }} disabled={busy} onClick={confirmBatch}>
+                      安装所选（{planChecked.size} 个）
+                    </button>
+                  )}
+                <button type="button" style={styles.button} disabled={busy} onClick={() => setPlan(null)}>取消</button>
+              </div>
+            </div>
+          )}
         </>
         )}
       </div>
+
+      {existsPrompt !== null && (
+        <div style={{ ...styles.msg, ...styles.err, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ flex: 1, minWidth: 0 }}>{existsPrompt.text}</span>
+          <button type="button" style={{ ...styles.button, ...styles.danger, flexShrink: 0 }} onClick={() => { const { retry } = existsPrompt; setExistsPrompt(null); retry() }}>覆盖安装</button>
+          <button type="button" style={{ ...styles.button, flexShrink: 0 }} onClick={() => setExistsPrompt(null)}>取消</button>
+        </div>
+      )}
 
       {message !== null && message.text !== '' && (
         <p style={{ ...styles.msg, ...(message.kind === 'ok' ? styles.ok : styles.err) }}>{message.text}</p>

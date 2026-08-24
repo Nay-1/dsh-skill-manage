@@ -8,9 +8,11 @@
 - **安装**（三种来源）：
   - 本地文件夹：填写路径安装
   - 浏览上传：浏览器目录选择器，选中即上传安装（无需暴露绝对路径）
-  - GitHub：粘贴 `github:owner/repo`、`owner/repo` 或完整 HTTPS URL（支持 `#path:子目录`），后台浅克隆后自动定位含 `SKILL.md` 的目录；直连失败自动改用镜像（`ghfast.top` / `gh-proxy.com`）重试，默认开启
+  - GitHub：粘贴 `github:owner/repo`、`owner/repo`、完整 HTTPS URL，或网页 `…/tree/<分支>/<目录>` 链接
+    - 单技能目录直装；**父目录 → 安装清单**：经 GitHub Trees API 扫描（约 0.5s、零克隆，失败自动回退克隆扫描），逐项勾选后确认安装（>15 个会先提示数量），冲突项标「已存在」默认不勾、勾上即覆盖
+    - 直连失败自动改用镜像（`ghfast.top` / `gh-proxy.com`）重试，默认开启
   - 搜索（skills.sh）：输入关键词在线搜索技能商店，结果展示技能名/仓库/安装数，点「安装」即按技能名引导仓库内 BFS 定位后一键安装
-  - 安装校验 `SKILL.md` frontmatter（kebab-case 名称、description），同名冲突默认拒绝，可勾选覆盖
+  - 安装校验 `SKILL.md` frontmatter（kebab-case 名称、description）；同名冲突无预置勾选——出现时内联提醒「覆盖安装 / 取消」，用户按需选择
 - **卸载**：两步确认删除，操作限定在受管技能目录内
 - **启停**：每个技能的「启用 / 禁用」一键同时改写 `disable-model-invocation` 与 `user-invocable` 两个 frontmatter 键
 - **列表**：按名称搜索、刷新；每行显示首字母彩色图标、状态圆点（绿=启用/灰=停用）、「已启用/已禁用」胶囊
@@ -56,10 +58,12 @@ dsh plugin --profile web add /path/to/dsh-skill-manage
   | 输入 | 说明 |
   |---|---|
   | `github:JimmyLv/bibigpt-skill` | 单技能仓库，自动定位 |
-  | `github:anthropics/skills#path:skills/pdf` | 多技能仓库，`#path:` 指定子目录 |
-  | `https://github.com/anthropics/skills#path:skills/docx` | 完整 URL 形式，等价 |
+  | `https://github.com/github/awesome-copilot/tree/main/skills/acquire-codebase-knowledge` | 网页 tree 链接，**单个**技能直装 |
+  | `https://github.com/github/awesome-copilot/tree/main/skills` | 父目录 → **出安装清单**（API 扫描约 0.5s），勾选后批量安装（>15 个先提示数量） |
+  | `https://github.com/anthropics/skills#path:skills/docx` | `#path:` 精确子目录（备用形式） |
 
-  格式：`github:owner/repo` / `owner/repo` / 完整 HTTPS URL，均可追加 `#path:子目录`（须含 SKILL.md）。仓库含多个技能目录且未指定 `#path:` 时会报错并列出候选。
+  格式：`github:owner/repo` / `owner/repo` / 完整 HTTPS URL / `…/tree/分支/目录` 网页链接，均可配合 `#path:子目录`（tree 链接自带目录，不可叠加）。裸仓库含多个技能目录时自动弹出安装清单供选择。
+- **冲突提醒**：同名技能出现时不预置「覆盖勾选」，而是内联弹出「技能 x 已存在」+〔覆盖安装〕〔取消〕按钮——本地、GitHub、搜索、上传四个入口统一。
 - **搜索安装（skills.sh）**：安装卡片切到「🔍 搜索」Tab，输入关键词回车；结果按技能名匹配仓库内 BFS 定位（无需知道仓库内真实路径），点「安装」即装。商店接口为 `https://www.skills.sh/api/search`（公开，无需鉴权）。
 - **镜像回退**：GitHub 直连失败时自动改经 `ghfast.top` / `gh-proxy.com` 浅克隆（默认勾选，可在 GitHub Tab 关闭），无代理环境也可安装
 - **代理环境**：GitHub 克隆由 dsh 进程执行，若网络需代理，请在带代理环境的终端里启动 dsh（`http_proxy` 等会继承），否则会直连超时（可改用镜像回退）
@@ -78,7 +82,7 @@ build.mjs             esbuild 构建：宿主 ESM lib/index.js +
 cordis.patch.yml      bundle patch：向组合层插入本插件行
 ```
 
-技能数据直接扫描文件系统（镜像官方 `dsh-skill-filesystem` provider 的目录与 rank 规则），因为宿主上下文的 `ctx.skills` 只能看到全局层，看不到用户/项目级技能。GitHub/上传安装均由后端克隆或暂存到临时目录后复用同一套 `handleInstall` 校验逻辑。浏览器 bundle 经包内 `dsh.client` 清单元被宿主自动发现并经 `/plugins` 路由分发加载。
+技能数据直接扫描文件系统（镜像官方 `dsh-skill-filesystem` provider 的目录与 rank 规则），因为宿主上下文的 `ctx.skills` 只能看到全局层，看不到用户/项目级技能。GitHub/上传安装均由后端克隆或暂存到临时目录后复用同一套 `handleInstall` 校验逻辑。GitHub 批量安装先走 `api.github.com/git/trees` 扫描出清单（零克隆，失败自动回退克隆扫描），用户确认后克隆一次并逐个安装（被点名即视为授权覆盖冲突）。浏览器 bundle 经包内 `dsh.client` 清单元被宿主自动发现并经 `/plugins` 路由分发加载。
 
 ## 开发
 

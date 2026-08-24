@@ -6,7 +6,9 @@
  *   GET  /workspaces             — registered workspaces usable as project roots
  *   POST /install {source,…}     — copy a local skill folder into the scope's dir
  *   POST /search-skills {q,…}    — proxy the skills.sh search, return slim hits
- *   POST /install-github {url}   — clone a GitHub repo, locate SKILL.md, install
+ *   POST /install-github {url}   — tree/github URL install: single skill, or a
+ *                                  plan (API-scanned, zero clone) that the
+ *                                  client confirms with {batch:[…]}
  *   POST /install-upload {files} — stage browser-picked files, then install them
  *   POST /remove  {name,…}       — delete an installed skill directory
  *   POST /toggle  {name,…}       — rewrite invocability flags in frontmatter
@@ -239,7 +241,7 @@ async function handleInstall(scope: Scope, body: Record<string, unknown>): Promi
     throw new ApiError(400, `目标目录越界：${destDir}`)
   }
   if (existsSync(destDir)) {
-    if (!force) throw new ApiError(409, `技能 "${name}" 已存在；勾选覆盖后重试`, { exists: true })
+    if (!force) throw new ApiError(409, `技能 "${name}" 已存在`, { exists: true })
     await rm(destDir, { recursive: true, force: true })
   }
   await mkdir(scope.installDir, { recursive: true })
@@ -361,7 +363,7 @@ async function handleSearchSkills(body: Record<string, unknown>): Promise<{ hits
 }
 
 /** Normalize a user-supplied repo reference to a clone URL plus an optional path inside it. */
-function parseRepoInput(raw: string): { url: string, subPath?: string } {
+function parseRepoInput(raw: string): { url: string, subPath?: string, branch?: string, owner?: string, repo?: string } {
   const input = raw.trim()
   if (input === '') throw new ApiError(400, '缺少 URL')
 
@@ -375,17 +377,44 @@ function parseRepoInput(raw: string): { url: string, subPath?: string } {
   }
 
   let url: string
-  const short = rest.match(/^github:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/)
-  const bare = rest.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/)
-  if (short !== null) url = `https://github.com/${short[1]}.git`
-  else if (bare !== null) url = `https://github.com/${bare[1]}.git`
-  else if (rest.startsWith('https://')) {
-    url = rest
-    if (!/^https:\/\/github\.com\//.test(url)) throw new ApiError(400, '仅支持 GitHub HTTPS URL')
+  let owner: string | undefined
+  let repo: string | undefined
+  let branch: string | undefined
+  const tree = rest.match(/^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/tree\/([^/?#]+)(?:\/(.+))?$/)
+  if (tree !== null) {
+    owner = tree[1]
+    repo = tree[2]
+    branch = tree[3]
+    url = `https://github.com/${tree[1]}/${tree[2]}.git`
+    if (subPath !== undefined) throw new ApiError(400, 'tree 链接自带子目录，不需要再写 #path:')
+    subPath = (tree[4] ?? '').replace(/^\/+/, '').replace(/\/+$/, '')
+    if (subPath === '') subPath = undefined
   } else {
-    throw new ApiError(400, `无法识别的仓库地址：${rest}（支持 github:owner/repo、owner/repo 或 https://github.com/…)`)
+    const short = rest.match(/^github:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/)
+    const bare = rest.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/)
+    if (short !== null) {
+      url = `https://github.com/${short[1]}.git`
+      const [o, r] = short[1].split('/')
+      owner = o
+      repo = r
+    } else if (bare !== null) {
+      url = `https://github.com/${bare[1]}.git`
+      const [o, r] = bare[1].split('/')
+      owner = o
+      repo = r
+    } else if (rest.startsWith('https://')) {
+      url = rest
+      const plain = url.match(/^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\.git)?\/?$/)
+      if (plain !== null) {
+        owner = plain[1]
+        repo = plain[2]
+      }
+      if (!/^https:\/\/github\.com\//.test(url)) throw new ApiError(400, '仅支持 GitHub HTTPS URL')
+    } else {
+      throw new ApiError(400, `无法识别的仓库地址：${rest}（支持 github:owner/repo、owner/repo 或 https://github.com/…)`)
+    }
   }
-  return { url: url.replace(/\/+$/, ''), subPath }
+  return { url: url.replace(/\/+$/, ''), subPath, branch, owner, repo }
 }
 
 /**
@@ -393,9 +422,12 @@ function parseRepoInput(raw: string): { url: string, subPath?: string } {
  * a descriptive message. Uses spawn with a detached process group so the whole
  * git tree (git-remote-https children included) dies on timeout.
  */
-function cloneRepo(url: string, cloneDir: string, timeoutMs: number = GITHUB_CLONE_TIMEOUT_MS): Promise<void> {
+function cloneRepo(url: string, cloneDir: string, timeoutMs: number = GITHUB_CLONE_TIMEOUT_MS, branch?: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', ['clone', '--depth', '1', url, cloneDir], { detached: true, stdio: ['ignore', 'ignore', 'pipe'] })
+    const args = ['clone', '--depth', '1']
+    if (branch !== undefined) args.push('--branch', branch)
+    args.push(url, cloneDir)
+    const child = spawn('git', args, { detached: true, stdio: ['ignore', 'ignore', 'pipe'] })
     let stderr = ''
     let settled = false
     const timer = setTimeout(() => {
@@ -425,66 +457,205 @@ function cloneRepo(url: string, cloneDir: string, timeoutMs: number = GITHUB_CLO
   })
 }
 
-/** Clone into a temp dir; locate the SKILL.md folder (subPath, skill name, or unique match). */
-async function handleInstallGithub(scope: Scope, body: Record<string, unknown>): Promise<SkillEntry> {
-  const raw = typeof body.url === 'string' ? body.url : ''
-  const { url, subPath } = parseRepoInput(raw)
-  const mirror = body.mirror === true
-  const force = body.force === true
-  const skill = typeof body.skill === 'string' && body.skill.trim() !== '' ? body.skill.trim() : undefined
+interface PlanSkill {
+  key: string
+  exists: boolean
+}
 
+interface Plan {
+  total: number
+  skills: PlanSkill[]
+  source: { url: string, branch?: string, subPath?: string }
+}
+
+type GithubResult =
+  | { kind: 'installed', skills: SkillEntry[], failed: Array<{ key: string, error: string }> }
+  | { kind: 'plan', plan: Plan }
+
+/** Clone with optional branch; fall back over mirrors when `mirror` is set. */
+async function cloneWithMirror(url: string, cloneDir: string, mirror: boolean, branch?: string): Promise<void> {
+  try {
+    await cloneRepo(url, cloneDir, GITHUB_CLONE_TIMEOUT_MS, branch)
+    return
+  } catch (directError) {
+    const noProxy = Object.keys(process.env).filter(k => k.toLowerCase().includes('proxy')).length === 0
+    if (!mirror) {
+      throw new ApiError(400, `${errText(directError)}${noProxy ? '\n检测到当前 dsh 进程没有代理环境变量；若网络需要代理，请在终端里启动 dsh，或勾选「直连失败时改用镜像」重试。' : ''}`)
+    }
+    let mirrorError: unknown = directError
+    for (const prefix of GITHUB_MIRRORS) {
+      await rm(cloneDir, { recursive: true, force: true }).catch(() => {})
+      try {
+        // Mirror anchors work as https://<prefix>https://github.com/...
+        await cloneRepo(`${prefix}${url}`, cloneDir, 45_000, branch)
+        mirrorError = null
+        break
+      } catch (error) {
+        mirrorError = error
+      }
+    }
+    if (mirrorError !== null) {
+      throw new ApiError(400, `直连与镜像均失败（已尝试 ${GITHUB_MIRRORS.length} 个镜像）：\n${errText(mirrorError)}`)
+    }
+  }
+}
+
+/**
+ * Scan a repo tree over the GitHub API (1 request, no clone) for SKILL.md
+ * directories under `subPath`. Returns null on any failure (network, rate
+ * limit, truncated tree) — callers then fall back to a local clone scan.
+ */
+async function scanTreeViaApi(owner: string, repo: string, branch: string, subPath: string): Promise<{ single: boolean, keys: string[] } | null> {
+  try {
+    const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`
+    const res = await fetch(url, {
+      headers: { 'user-agent': 'dsh-skill-manage', accept: 'application/vnd.github+json' },
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!res.ok) return null
+    const json = (await res.json()) as { tree?: unknown, truncated?: unknown }
+    if (!Array.isArray(json.tree) || json.truncated === true) return null
+    const files = (json.tree as Array<{ path?: unknown, type?: unknown }>)
+      .filter(entry => entry.type === 'blob' && typeof entry.path === 'string')
+      .map(entry => entry.path as string)
+    const prefix = `${subPath}/`
+    if (files.includes(`${prefix}SKILL.md`)) return { single: true, keys: [] }
+    const keys = new Set<string>()
+    for (const file of files) {
+      if (!file.startsWith(prefix) || !file.endsWith('/SKILL.md')) continue
+      const rel = file.slice(prefix.length, -'/SKILL.md'.length)
+      if (rel === '' || rel.split('/').length > 3) continue
+      keys.add(path.basename(rel))
+    }
+    if (keys.size > 0) {
+      return { single: false, keys: [...keys] }
+    }
+    // No SKILL.md under subPath → let the clone fallback answer whether the
+    // directory exists at all (that also covers truncated/branch oddities).
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** Build a plan from repo-relative SKILL.md directory names. */
+function buildPlan(scope: Scope, source: { url: string, branch?: string, subPath?: string }, keys: string[]): Plan {
+  const skills = keys.map(key => ({ key, exists: existsSync(path.join(scope.installDir, key)) }))
+    .sort((a, b) => a.key.localeCompare(b.key))
+  return { total: skills.length, skills, source }
+}
+
+/** Clone once (mirror/branch aware), then install the named skills (点名即授权覆盖). */
+async function executeBatchInstall(scope: Scope, source: { url: string, subPath?: string, branch?: string }, batch: string[], mirror: boolean): Promise<GithubResult> {
   const tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'dsh-skill-github-'))
   try {
     const cloneDir = path.join(tmpRoot, 'repo')
-    try {
-      await cloneRepo(url, cloneDir)
-    } catch (directError) {
-      const noProxy = Object.keys(process.env).filter(k => k.toLowerCase().includes('proxy')).length === 0
-      if (!mirror) {
-        throw new ApiError(400, `${errText(directError)}${noProxy ? '\n检测到当前 dsh 进程没有代理环境变量；若网络需要代理，请在终端里启动 dsh，或勾选「直连失败时改用镜像」重试。' : ''}`)
+    await cloneWithMirror(source.url, cloneDir, mirror, source.branch)
+    const base = source.subPath !== undefined ? path.join(cloneDir, source.subPath) : cloneDir
+    const candidates = await collectSkillDirs(base)
+    const skills: SkillEntry[] = []
+    const failed: Array<{ key: string, error: string }> = []
+    for (const key of batch) {
+      const match = candidates.find(dir => path.basename(dir) === key)
+      if (match === undefined) {
+        failed.push({ key, error: '仓库中未找到对应技能目录' })
+        continue
       }
-      let mirrorError: unknown = directError
-      for (const prefix of GITHUB_MIRRORS) {
-        const cloneDir = path.join(tmpRoot, 'repo')
-        await rm(cloneDir, { recursive: true, force: true }).catch(() => {})
-        try {
-          // Mirror anchors work as https://<prefix>https://github.com/...
-          await cloneRepo(`${prefix}${url}`, cloneDir, 45_000)
-          mirrorError = null
-          break
-        } catch (error) {
-          mirrorError = error
-        }
-      }
-      if (mirrorError !== null) {
-        throw new ApiError(400, `直连与镜像均失败（已尝试 ${GITHUB_MIRRORS.length} 个镜像）：\n${errText(mirrorError)}`)
+      try {
+        await rm(path.join(match, '.git'), { recursive: true, force: true }).catch(() => {})
+        skills.push(await handleInstall(scope, { source: match, force: true }))
+      } catch (error) {
+        failed.push({ key, error: errText(error) })
       }
     }
-
-    let srcDir = path.join(cloneDir, subPath ?? '')
-    if (subPath !== undefined) {
-      if (!existsSync(path.join(srcDir, 'SKILL.md'))) {
-        throw new ApiError(400, `#path: 指定的目录不存在或不含 SKILL.md：${subPath}`)
-      }
-    } else {
-      srcDir = await locateUniqueSkillDir(cloneDir, skill)
-    }
-    // Never copy the repo's own .git into the installed skill folder.
-    await rm(path.join(srcDir, '.git'), { recursive: true, force: true }).catch(() => {})
-
-    return await handleInstall(scope, { source: srcDir, force })
+    return { kind: 'installed', skills, failed }
   } finally {
     await rm(tmpRoot, { recursive: true, force: true })
   }
 }
 
+/** Install a single skill dir (no copy of .git), reusing all handleInstall validation. */
+async function installSingle(scope: Scope, srcDir: string, force: boolean): Promise<SkillEntry> {
+  await rm(path.join(srcDir, '.git'), { recursive: true, force: true }).catch(() => {})
+  return await handleInstall(scope, { source: srcDir, force })
+}
+
 /**
- * BFS (depth ≤ 3) for directories holding SKILL.md; decide from the full
- * candidate list (never from the first depth that yields one — template assets
- * can hide at shallow depth). preferredName (from skills.sh hits) wins by
- * basename equal; otherwise require a unique match unless a path was given.
+ * GitHub install entry point. Dispatch by body:
+ *   batch[]      → plan (source) + explicit keys; each named key may overwrite
+ *   plan         → build a plan from API scan (no clone) or local clone scan
+ *   otherwise    → single install (subPath exact / skill-name guided / unique)
  */
-async function locateUniqueSkillDir(root: string, preferredName?: string): Promise<string> {
+async function handleInstallGithub(scope: Scope, body: Record<string, unknown>): Promise<GithubResult> {
+  const raw = typeof body.url === 'string' ? body.url : ''
+  const { url, subPath, branch, owner, repo } = parseRepoInput(raw)
+  const mirror = body.mirror === true
+  const force = body.force === true
+  const skill = typeof body.skill === 'string' && body.skill.trim() !== '' ? body.skill.trim() : undefined
+  const source = { url, subPath, branch }
+  const batch = Array.isArray(body.batch) ? body.batch.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : undefined
+
+  if (batch !== undefined && batch.length > 0) {
+    return await executeBatchInstall(scope, source, batch, mirror)
+  }
+
+  // Tree URL: try an API scan first — multi-skill gives a plan with zero clones.
+  if (subPath !== undefined && branch !== undefined && owner !== undefined && repo !== undefined) {
+    const scan = await scanTreeViaApi(owner, repo, branch, subPath)
+    if (scan !== null && !scan.single) {
+      return { kind: 'plan', plan: buildPlan(scope, source, scan.keys) }
+    }
+  }
+
+  // Fallback for everything needing file contents: clone once, then decide.
+  if (subPath !== undefined) {
+    // Exact target directory.
+    const tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'dsh-skill-github-'))
+    try {
+      const cloneDir = path.join(tmpRoot, 'repo')
+      await cloneWithMirror(url, cloneDir, mirror, branch)
+      const srcDir = path.join(cloneDir, subPath)
+      if (existsSync(path.join(srcDir, 'SKILL.md'))) {
+        return { kind: 'installed', skills: [await installSingle(scope, srcDir, force)], failed: [] }
+      }
+      if (!existsSync(srcDir)) {
+        throw new ApiError(400, `#path: 指定的目录不存在：${subPath}`)
+      }
+      const keys = (await collectSkillDirs(srcDir)).map(dir => path.basename(dir))
+      if (keys.length === 0) throw new ApiError(400, `#path: 指定的目录不存在或不含 SKILL.md：${subPath}`)
+      return { kind: 'plan', plan: buildPlan(scope, source, keys) }
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true })
+    }
+  }
+
+  // No subPath: repo-root search (skill-name guided, unique, or a plan).
+  const tmpRoot = await mkdtemp(path.join(os.tmpdir(), 'dsh-skill-github-'))
+  try {
+    const cloneDir = path.join(tmpRoot, 'repo')
+    await cloneWithMirror(url, cloneDir, mirror, branch)
+    const candidates = await collectSkillDirs(cloneDir)
+    if (candidates.length === 0) {
+      throw new ApiError(400, '仓库中没有找到含 SKILL.md 的技能目录')
+    }
+    if (skill !== undefined) {
+      const match = candidates.find(dir => path.basename(dir) === skill)
+      if (match === undefined) {
+        throw new ApiError(400, `仓库中没有找到技能「${skill}」的目录`)
+      }
+      return { kind: 'installed', skills: [await installSingle(scope, match, force)], failed: [] }
+    }
+    if (candidates.length === 1) {
+      return { kind: 'installed', skills: [await installSingle(scope, candidates[0], force)], failed: [] }
+    }
+    return { kind: 'plan', plan: buildPlan(scope, source, candidates.map(dir => path.basename(dir))) }
+  } finally {
+    await rm(tmpRoot, { recursive: true, force: true })
+  }
+}
+
+/** BFS (depth ≤ 3) for all directories holding SKILL.md (prunes .git/node_modules). */
+async function collectSkillDirs(root: string): Promise<string[]> {
   const unique: string[] = []
   const walk = async (dir: string, level: number): Promise<void> => {
     if (level > 3) return
@@ -497,18 +668,7 @@ async function locateUniqueSkillDir(root: string, preferredName?: string): Promi
     }
   }
   await walk(root, 0)
-
-  if (unique.length === 0) {
-    throw new ApiError(400, '仓库中没有找到含 SKILL.md 的技能目录')
-  }
-  if (preferredName !== undefined) {
-    const match = unique.filter(u => path.basename(u) === preferredName)
-    if (match.length > 0) return match[0]
-  }
-  if (unique.length > 1) {
-    throw new ApiError(400, `仓库含 ${unique.length} 个技能目录，请用 #path: 指定其一（例如 ${unique.map(u => path.relative(root, u)).join('、')}）`)
-  }
-  return unique[0]
+  return [...new Set(unique)]
 }
 
 /** Locate an installed skill across the scope's dirs (earlier dirs win). */function locateSkillDir(scope: Scope, name: unknown): string {
@@ -628,7 +788,12 @@ export function apply(ctx: {
             return
           }
           if (route === '/install-github') {
-            json(res, 200, { ok: true, skill: await handleInstallGithub(scope, body) })
+            const result = await handleInstallGithub(scope, body)
+            if (result.kind === 'plan') {
+              json(res, 200, { ok: false, plan: result.plan })
+            } else {
+              json(res, 200, { ok: true, skills: result.skills, failed: result.failed })
+            }
             return
           }
           if (route === '/remove') {
