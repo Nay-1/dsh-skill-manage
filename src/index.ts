@@ -38,6 +38,12 @@ function userSkillsDir(): string {
   return path.join(home, 'skills')
 }
 
+/** Shared-agent root: `$DSH_AGENTS_HOME/skills`, defaulting to `~/.agents/skills`. */
+function agentsSkillsDir(): string {
+  const home = process.env.DSH_AGENTS_HOME ?? path.join(os.homedir(), '.agents')
+  return path.join(home, 'skills')
+}
+
 interface WorkspaceLike {
   readonly path?: unknown
   readonly title?: unknown
@@ -54,8 +60,9 @@ interface Scope {
 }
 
 function userScope(): Scope {
-  const dir = userSkillsDir()
-  return { kind: 'user', dirs: [dir], installDir: dir, label: dir }
+  const dsh = userSkillsDir()
+  // Official rank: user-dsh (400) outranks user-agents (500).
+  return { kind: 'user', dirs: [dsh, agentsSkillsDir()], installDir: dsh, label: dsh }
 }
 
 /** Nearest ancestor containing `.git`; the given dir itself when none is found. */
@@ -132,6 +139,10 @@ export interface SkillEntry {
   scope: 'user' | 'project'
   modelInvocable: boolean
   userInvocable: boolean
+  /** Source root this entry was scanned from (differs from installDir for ~/.agents). */
+  root?: string
+  /** True for flat single-file skills (`<name>.md`). */
+  flat?: boolean
 }
 
 async function scanSkillsDir(scope: Scope, dir: string, into: Map<string, SkillEntry>): Promise<void> {
@@ -141,8 +152,10 @@ async function scanSkillsDir(scope: Scope, dir: string, into: Map<string, SkillE
   } catch {
     return
   }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
+  // Directories first: a bundle always outranks a same-named flat file.
+  const dirs = entries.filter(e => e.isDirectory())
+  const files = entries.filter(e => e.isFile())
+  for (const entry of dirs) {
     let content: string
     try {
       content = await readFile(path.join(dir, entry.name, 'SKILL.md'), 'utf8')
@@ -160,6 +173,31 @@ async function scanSkillsDir(scope: Scope, dir: string, into: Map<string, SkillE
       scope: scope.kind,
       modelInvocable: meta['disable-model-invocation'] !== 'true',
       userInvocable: meta['user-invocable'] !== 'false',
+      root: dir,
+      flat: false,
+    })
+  }
+  // Flat `<name>.md` single-file skills (official filesystem format).
+  for (const entry of files) {
+    if (!entry.name.endsWith('.md')) continue
+    let content: string
+    try {
+      content = await readFile(path.join(dir, entry.name), 'utf8')
+    } catch {
+      continue
+    }
+    const meta = parseFrontmatter(content)
+    const name = meta.name ?? entry.name.slice(0, -3)
+    if (into.has(name)) continue
+    into.set(name, {
+      name,
+      description: meta.description ?? '',
+      dirName: entry.name,
+      scope: scope.kind,
+      modelInvocable: meta['disable-model-invocation'] !== 'true',
+      userInvocable: meta['user-invocable'] !== 'false',
+      root: dir,
+      flat: true,
     })
   }
 }
@@ -218,42 +256,59 @@ async function handleInstall(scope: Scope, body: Record<string, unknown>): Promi
   const force = body.force === true
   if (source === '') throw new ApiError(400, '缺少 source（本地技能文件夹路径）')
 
-  const srcDir = path.resolve(source)
-  const srcStat = await stat(srcDir).catch(() => null)
-  if (srcStat === null || !srcStat.isDirectory()) throw new ApiError(400, `路径不存在或不可访问：${srcDir}`)
+  const src = path.resolve(source)
+  const srcStat = await stat(src).catch(() => null)
+  if (srcStat === null || (!srcStat.isDirectory() && !srcStat.isFile())) {
+    throw new ApiError(400, `路径不存在或不可访问：${src}`)
+  }
+  const flat = srcStat.isFile()
 
   let skillMd: string
-  try {
-    skillMd = await readFile(path.join(srcDir, 'SKILL.md'), 'utf8')
-  } catch {
-    throw new ApiError(400, '源文件夹缺少 SKILL.md，不是有效的技能包')
+  let metaName: string
+  if (flat) {
+    if (!src.endsWith('.md')) throw new ApiError(400, '源文件必须是 .md（平铺技能）')
+    skillMd = await readFile(src, 'utf8')
+    metaName = path.basename(src, '.md')
+  } else {
+    try {
+      skillMd = await readFile(path.join(src, 'SKILL.md'), 'utf8')
+    } catch {
+      throw new ApiError(400, '源文件夹缺少 SKILL.md，不是有效的技能包')
+    }
+    metaName = path.basename(src)
   }
   const meta = parseFrontmatter(skillMd)
 
-  const name = typeof meta.name === 'string' && meta.name !== '' ? meta.name : path.basename(srcDir)
+  const name = typeof meta.name === 'string' && meta.name !== '' ? meta.name : metaName
   if (!KEBAB_CASE.test(name)) {
     throw new ApiError(400, `技能名 "${name}" 不合法：需要 kebab-case（小写字母/数字，连字符分隔）`)
   }
   if (!meta.description) throw new ApiError(400, 'SKILL.md frontmatter 缺少 description（技能目录展示需要它）')
 
-  const destDir = path.join(scope.installDir, name)
-  if (!path.resolve(destDir).startsWith(scope.installDir + path.sep)) {
-    throw new ApiError(400, `目标目录越界：${destDir}`)
+  const dest = path.join(scope.installDir, flat ? `${name}.md` : name)
+  if (!path.resolve(dest).startsWith(scope.installDir + path.sep)) {
+    throw new ApiError(400, `目标目录越界：${dest}`)
   }
-  if (existsSync(destDir)) {
+  if (existsSync(dest)) {
     if (!force) throw new ApiError(409, `技能 "${name}" 已存在`, { exists: true })
-    await rm(destDir, { recursive: true, force: true })
+    await rm(dest, { recursive: true, force: true })
   }
   await mkdir(scope.installDir, { recursive: true })
-  await cp(srcDir, destDir, { recursive: true })
+  if (flat) {
+    await writeFile(dest, skillMd)
+  } else {
+    await cp(src, dest, { recursive: true })
+  }
 
   return {
     name,
     description: meta.description,
-    dirName: name,
+    dirName: flat ? `${name}.md` : name,
     scope: scope.kind,
     modelInvocable: meta['disable-model-invocation'] !== 'true',
     userInvocable: meta['user-invocable'] !== 'false',
+    root: scope.installDir,
+    flat,
   }
 }
 
@@ -671,31 +726,38 @@ async function collectSkillDirs(root: string): Promise<string[]> {
   return [...new Set(unique)]
 }
 
-/** Locate an installed skill across the scope's dirs (earlier dirs win). */function locateSkillDir(scope: Scope, name: unknown): string {
+/**
+ * Locate an installed skill across the scope's dirs (earlier dirs win).
+ * Returns the bundle directory or the flat `<name>.md` file path.
+ */
+function locateSkillDir(scope: Scope, name: unknown): string {
   if (typeof name !== 'string' || !KEBAB_CASE.test(name)) {
     throw new ApiError(400, `技能名不合法：${String(name)}`)
   }
   for (const dir of scope.dirs) {
-    const candidate = path.resolve(path.join(dir, name))
-    if (!candidate.startsWith(path.resolve(dir) + path.sep)) continue
-    if (existsSync(candidate)) return candidate
+    const base = path.resolve(dir)
+    const dirCandidate = path.resolve(path.join(base, name))
+    if (dirCandidate.startsWith(base + path.sep) && existsSync(path.join(dirCandidate, 'SKILL.md'))) return dirCandidate
+    const fileCandidate = path.resolve(path.join(base, `${name}.md`))
+    if (fileCandidate.startsWith(base + path.sep) && existsSync(fileCandidate)) return fileCandidate
   }
   throw new ApiError(404, `技能 "${name}" 在当前范围未安装`)
 }
 
 async function handleRemove(scope: Scope, body: Record<string, unknown>): Promise<{ removed: string }> {
-  const dir = locateSkillDir(scope, body.name)
-  await rm(dir, { recursive: true, force: true })
+  const target = locateSkillDir(scope, body.name)
+  await rm(target, { recursive: true, force: true })
   return { removed: String(body.name) }
 }
 
 async function handleToggle(scope: Scope, body: Record<string, unknown>): Promise<{ toggled: string }> {
-  const dir = locateSkillDir(scope, body.name)
+  const target = locateSkillDir(scope, body.name)
   const model = typeof body.model === 'boolean' ? body.model : null
   const user = typeof body.user === 'boolean' ? body.user : null
   if (model === null && user === null) throw new ApiError(400, '需要 model 或 user 之一（布尔值）')
 
-  const file = path.join(dir, 'SKILL.md')
+  const statInfo = await stat(target).catch(() => null)
+  const file = statInfo !== null && statInfo.isFile() ? target : path.join(target, 'SKILL.md')
   const content = await readFile(file, 'utf8')
   // disable-model-invocation stores the inverse of model invocability;
   // user-invocable stores it directly.

@@ -21,10 +21,11 @@
 
 | 范围 | 目录 | 说明 |
 |---|---|---|
-| 用户级（默认） | `~/.dsh/skills`（即 `$DSH_HOME/skills`） | 所有会话可见 |
-| 项目级 | `<项目根>/.dsh/skills` | 从 `ctx.workspaceRegistry`（Web UI 工作区切换器）选择项目 |
+| 用户级（默认） | `~/.dsh/skills`（rank 400，即 `$DSH_HOME/skills`） | 所有会话可见；同名时优先于 `.agents` |
+| 用户级 `.agents` | `~/.agents/skills`（rank 500，即 `$DSH_AGENTS_HOME/skills`） | 共享 agent 根，同样识别展示（带 `.agents` 徽标），可启停/卸载 |
+| 项目级 | `<项目根>/.dsh/skills`（rank 100） | 从 `ctx.workspaceRegistry`（Web UI 工作区切换器）选择项目 |
 
-项目根按官方 provider 语义解析为最近的 `.git` 祖先目录；扫描 `<根>/.dsh/skills` 与 `<根>/.agents/skills`，同名时 `.dsh` 优先，安装固定落入 `.dsh/skills`。
+项目根按官方 provider 语义解析为最近的 `.git` 祖先目录；扫描 `<根>/.dsh/skills` 与 `<根>/.agents/skills`，同名时 `.dsh` 优先，安装固定落入 `.dsh/skills`。技能格式支持目录 bundle（`<name>/SKILL.md`）与平铺单文件（`<name>.md`）；本地安装入口填写文件路径即可安装平铺技能。
 
 ## 安装
 

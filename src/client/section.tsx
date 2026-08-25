@@ -8,6 +8,8 @@ export interface SkillEntry {
   scope: 'user' | 'project'
   modelInvocable: boolean
   userInvocable: boolean
+  root?: string
+  flat?: boolean
 }
 
 type SourceTab = 'local' | 'github' | 'search'
@@ -157,6 +159,7 @@ const styles: Record<string, CSSProperties> = {
   statusDot: { position: 'absolute', top: -3, left: -3, width: 10, height: 10, borderRadius: '50%' },
   rowMain: { flex: 1, minWidth: 0 },
   skillName: { fontWeight: 650, fontSize: 14, fontFamily: 'inherit' },
+  badge: { marginLeft: 8, fontSize: 11, color: '#8a8f98', border: '1px solid #5557', borderRadius: 4, padding: '0 5px', fontWeight: 500, whiteSpace: 'nowrap' },
   skillDesc: { color: '#999', fontSize: 12.5, marginTop: 3, overflowWrap: 'anywhere', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' },
   actions: { display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 },
   statusPill: { padding: '3px 10px', borderRadius: 999, fontSize: 12, whiteSpace: 'nowrap' },
@@ -600,7 +603,9 @@ export function SkillManageSection(): React.ReactElement {
           <span style={{ ...styles.iconLetterText, color: iconColor(skill.name) }}>{iconLetter(skill.name)}</span>
         </div>
         <div style={styles.rowMain}>
-          <div style={styles.skillName}>{skill.name}</div>
+          <div style={styles.skillName}>{skill.name}{skill.root !== undefined && skill.root !== installTargetPath && (
+            <span style={styles.badge}>.agents</span>
+          )}</div>
           <div style={styles.skillDesc}>{skill.description || '(无描述)'}</div>
         </div>
         <div style={styles.actions}>
