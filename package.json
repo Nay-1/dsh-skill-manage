@@ -1,7 +1,7 @@
 {
   "name": "@nay-1/dsh-skill-manage",
   "description": "DeepSeek Harness 技能管理设置页插件",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "license": "MIT",
   "main": "lib/index.js",
