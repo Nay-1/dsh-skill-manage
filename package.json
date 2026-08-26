@@ -1,5 +1,5 @@
 {
-  "name": "dsh-skill-manage",
+  "name": "@nay-1/dsh-skill-manage",
   "description": "DeepSeek Harness 技能管理设置页插件",
   "version": "0.1.0",
   "type": "module",

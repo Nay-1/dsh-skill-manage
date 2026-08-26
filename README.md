@@ -30,8 +30,8 @@
 ## 安装
 
 ```sh
-# 从 GitHub 安装（pnpm 会运行 prepare 构建脚本，首次需在 profile 的 pnpm-workspace.yaml 里授权）
-dsh plugin --profile web add github:Nay-1/dsh-skill-manage
+# 从 npm 安装（推荐；pnpm 会运行 prepare 构建脚本，首次需在 profile 的 pnpm-workspace.yaml 里授权）
+dsh plugin --profile web add @nay-1/dsh-skill-manage
 ```
 
 若 pnpm 供应链策略拦截构建，按提示把包键加入 profile 的授权清单：
@@ -39,10 +39,16 @@ dsh plugin --profile web add github:Nay-1/dsh-skill-manage
 ```yaml
 # ~/.dsh/profiles/web/pnpm-workspace.yaml
 allowBuilds:
-  dsh-skill-manage: true
+  '@nay-1/dsh-skill-manage': true
 ```
 
-也可以从本地路径安装：
+也可以从 GitHub 安装：
+
+```sh
+dsh plugin --profile web add github:Nay-1/dsh-skill-manage
+```
+
+或本地路径：
 
 ```sh
 git clone https://github.com/Nay-1/dsh-skill-manage.git
