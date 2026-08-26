@@ -160,8 +160,6 @@ pnpm typecheck   # tsc --noEmit
 
 本地迭代：改代码 → `pnpm build` → 重启 `dsh web`。
 
-构建、lint 与发布规范见 [CONTRIBUTING.md](/CONTRIBUTING.md)（维护者向）。
-
 ## License
 
 MIT

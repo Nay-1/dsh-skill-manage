@@ -161,8 +161,6 @@ pnpm typecheck   # tsc --noEmit
 
 Local loop: edit → `pnpm build` → restart `dsh web`.
 
-See [CONTRIBUTING.md](/CONTRIBUTING.md) for build, lint and release guidelines (maintainers).
-
 ## License
 
 MIT
