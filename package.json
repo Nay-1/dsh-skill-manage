@@ -20,6 +20,9 @@
     "typecheck": "tsc --noEmit",
     "prepare": "node build.mjs"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
