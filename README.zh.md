@@ -66,11 +66,11 @@ dsh plugin --profile web add /path/to/dsh-skill-manage
 | 范围 | 目录 | Rank | 说明 |
 |---|---|---|---|
 | 项目级（.dsh） | `<项目根>/.dsh/skills` | 100 | 优先级最高 |
-| 项目级（.agents） | `<项目根>/.agents/skills` | 200 | |
+| 项目级（.agents） | `<项目根>/.agents/skills` | 200 | 列表带 `.agents` 徽标 |
 | 用户级（.dsh） | `~/.dsh/skills`（`$DSH_HOME/skills`） | 400 | 默认视图 |
 | 用户级（.agents） | `~/.agents/skills`（`$DSH_AGENTS_HOME/skills`） | 500 | 列表带 `.agents` 徽标 |
 
-项目根按官方 provider 语义解析为最近的 `.git` 祖先目录。同名技能由高 rank 根遮蔽；安装固定落入各范围的最高 rank 根。
+项目根按官方 provider 语义解析为最近的 `.git` 祖先目录。同名技能由高 rank 根遮蔽；安装固定落入各范围的最高 rank 根。**凡是来自非最高 rank 根（`.agents`）的技能，列表一律带 `.agents` 徽标**，不论用户级还是项目级。
 
 技能格式：目录 bundle（`<name>/SKILL.md`）与平铺单文件（`<name>.md`）均能被发现与管理。
 

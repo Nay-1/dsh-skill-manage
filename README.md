@@ -67,11 +67,11 @@ Restart `dsh web`, then open **Settings → Skill Management**.
 | Scope | Directory | Rank | Notes |
 |---|---|---|---|
 | Project (`.dsh`) | `<projectRoot>/.dsh/skills` | 100 | Highest priority |
-| Project (`.agents`) | `<projectRoot>/.agents/skills` | 200 | |
+| Project (`.agents`) | `<projectRoot>/.agents/skills` | 200 | Shown with a `.agents` badge |
 | User (`.dsh`) | `~/.dsh/skills` (`$DSH_HOME/skills`) | 400 | Default view |
 | User (`.agents`) | `~/.agents/skills` (`$DSH_AGENTS_HOME/skills`) | 500 | Shown with a `.agents` badge |
 
-The project root is resolved to the nearest ancestor containing `.git` (official provider semantics). Same-name skills are shadowed by the higher-rank root; installs always land in the top root of their scope.
+The project root is resolved to the nearest ancestor containing `.git` (official provider semantics). Same-name skills are shadowed by the higher-rank root; installs always land in the top root of their scope. **Every skill from a non-top rank root (`.agents`) gets a `.agents` badge in the list — user and project scopes alike.**
 
 Skill formats: directory bundles (`<name>/SKILL.md`) **and** flat single-file skills (`<name>.md`) are both discovered and manageable.
 
