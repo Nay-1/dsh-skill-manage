@@ -160,11 +160,7 @@ pnpm typecheck   # tsc --noEmit
 
 本地迭代：改代码 → `pnpm build` → 重启 `dsh web`。
 
-**发布 checklist：**
-
-- `version` 升版（`npm version patch`）
-- `publishConfig.access: "public"` 就位（scoped 包发布必需）
-- `npm publish --registry=https://registry.npmjs.org`——按 npm 新规需要 2FA 或 bypass-2FA token
+构建、lint 与发布规范见 [CONTRIBUTING.md](/CONTRIBUTING.md)（维护者向）。
 
 ## License
 

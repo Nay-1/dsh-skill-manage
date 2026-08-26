@@ -161,11 +161,7 @@ pnpm typecheck   # tsc --noEmit
 
 Local loop: edit → `pnpm build` → restart `dsh web`.
 
-**Publishing checklist:**
-
-- `version` bumped (`npm version patch`)
-- `publishConfig.access: "public"` present (scoped packages require it)
-- `npm publish --registry=https://registry.npmjs.org` — 2FA or bypass-2FA token required by npm policy
+See [CONTRIBUTING.md](/CONTRIBUTING.md) for build, lint and release guidelines (maintainers).
 
 ## License
 
