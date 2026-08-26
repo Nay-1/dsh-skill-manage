@@ -16,6 +16,11 @@ const BASE_EXTERNALS = [
 
 const clientExternals = [...BASE_EXTERNALS, ...(pkg.dsh?.client?.external ?? [])]
 
+// The client bundle must register under the plugin's stable module ID, NOT the
+// npm package name: dsh expects the id used in cordis.patch.yml (`name: dsh-skill-manage`).
+// Keep this in sync if the patch name ever changes.
+const CLIENT_MODULE_ID = 'dsh-skill-manage'
+
 await build({
   entryPoints: ['src/index.ts'],
   outfile: 'lib/index.js',
@@ -38,7 +43,7 @@ await build({
   sourcemap: true,
   banner: {
     js: [
-      `window.__ModuleLoader__.load({ id: ${JSON.stringify(pkg.name)}, factory: (require) => {`,
+      `window.__ModuleLoader__.load({ id: ${JSON.stringify(CLIENT_MODULE_ID)}, factory: (require) => {`,
       'var module = { exports: {} }; var exports = module.exports;',
     ].join('\n'),
   },
