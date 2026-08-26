@@ -17,9 +17,13 @@ const BASE_EXTERNALS = [
 const clientExternals = [...BASE_EXTERNALS, ...(pkg.dsh?.client?.external ?? [])]
 
 // The client bundle must register under the plugin's stable module ID, NOT the
-// npm package name: dsh expects the id used in cordis.patch.yml (`name: dsh-skill-manage`).
+// npm package name's unscoped alias: dsh resolves the loader entry AND the
+// client boot-manifest row by the `name` in cordis.patch.yml, and imports that
+// specifier from the profile directory. The scoped package name resolves
+// natively (`import('@nay-1/dsh-skill-manage')` → exports "." → lib/index.js);
+// an unscoped name would require a pnpm alias in every profile that installs us.
 // Keep this in sync if the patch name ever changes.
-const CLIENT_MODULE_ID = 'dsh-skill-manage'
+const CLIENT_MODULE_ID = '@nay-1/dsh-skill-manage'
 
 await build({
   entryPoints: ['src/index.ts'],
